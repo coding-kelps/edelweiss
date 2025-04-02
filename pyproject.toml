@@ -1,0 +1,20 @@
+[project]
+name = "chamois-initial-data-mining"
+version = "0.1.0"
+description = "The data mining work for the chamois initial data"
+authors = [
+    {name = "Coding Kelps"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pygbif (>=0.6.5,<0.7.0)",
+    "duckdb (>=1.2.1,<2.0.0)",
+    "ipykernel (>=6.29.5,<7.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
