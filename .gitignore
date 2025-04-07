@@ -175,3 +175,9 @@ cython_debug/
 
 # direnv configuration
 .envrc
+
+# Dagster
+.tmp_dagster_home*
+
+# Dev artefacts
+./data

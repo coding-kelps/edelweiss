@@ -1,5 +1,5 @@
 [project]
-name = "chamois-initial-data-mining"
+name = "edelweiss"
 version = "0.1.0"
 description = "The data mining work for the chamois initial data"
 authors = [
@@ -7,17 +7,21 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "pygbif (>=0.6.5,<0.7.0)",
-    "duckdb (>=1.2.1,<2.0.0)",
-    "ipykernel (>=6.29.5,<7.0.0)",
-    "huggingface-hub (>=0.30.1,<0.31.0)",
-    "datasets (>=3.5.0,<4.0.0)",
-    "ipywidgets (>=8.1.5,<9.0.0)"
+    "dagster (>=1.10.9,<2.0.0)",
+    "dagster-postgres (>=0.26.9,<0.27.0)",
+    "dagster-docker (>=0.26.9,<0.27.0)",
+    "dagster-duckdb (>=0.26.9,<0.27.0)",
+    "pandas (>=2.2.3,<3.0.0)",
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+dagster-webserver = "^1.10.9"
+
