@@ -11,7 +11,7 @@ GBIF_API_LIMIT=300
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="Extract raw observation occurences of animal species in the French Alps from the GBIF API",
     tags = {"gbif": ""}
 )
@@ -31,19 +31,22 @@ def raw_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
         conn.register("df_view", df)
         conn.execute("CREATE TABLE IF NOT EXISTS raw_occurrences AS SELECT * FROM df_view")
 
+        preview_query = "SELECT * FROM raw_occurrences LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("select count(*) from raw_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
     
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -60,19 +63,23 @@ def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
                 vitality
             FROM raw_occurrences;
         """)
+
+        preview_query = "SELECT * FROM pruned_occurrences LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("select count(*) from pruned_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -82,12 +89,16 @@ def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
             CREATE TABLE IF NOT EXISTS unique_taxon_keys AS
             SELECT DISTINCT taxonKey FROM raw_occurrences;
         """)
+
+        preview_query = "SELECT * FROM unique_taxon_keys LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("select count(*) from unique_taxon_keys").fetchone()
         count = row_count[0] if row_count else 0
-        
+
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
 
@@ -103,7 +114,7 @@ def get_vernacular_name(taxonKey):
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
@@ -134,19 +145,22 @@ def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
             VALUES (?, ?);
         """, data)
 
+        preview_query = "SELECT * FROM vernacular_name_map LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("select count(*) from vernacular_name_map").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="Create a new table \"living_species_occurences\" removing all row that describe a dead species observation occurences from \"pruned_occurrences\"",
     deps=[pruned_occurrences]
 )
@@ -163,19 +177,23 @@ def living_species_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
             FROM pruned_occurrences
             WHERE vitality IS DISTINCT FROM 'dead';
         """)
+
+        preview_query = "SELECT * FROM living_species_occurences LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("select count(*) from living_species_occurences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="Create a new table \"vernacular_name_mapped_occurences\" mapping all vernacular name for each row of \"living_species_occurences\" from \"vernacular_name_map\"",
     deps=[vernacular_name_map, living_species_occurrences]
 )
@@ -190,11 +208,15 @@ def vernacular_name_mapped_occurences(duckdb: DuckDBResource) -> dg.MaterializeR
             LEFT JOIN vernacular_name_map v
             ON l.taxonKey = v.taxonKey;
         """)
+
+        preview_query = "SELECT * FROM vernacular_name_mapped_occurences LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("select count(*) from vernacular_name_mapped_occurences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
