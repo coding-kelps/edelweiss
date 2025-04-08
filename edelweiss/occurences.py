@@ -8,15 +8,16 @@ from typing import Optional, Tuple
 from pydantic import Field
 
 ANIMALIA_KINGDOM_KEY="1"
+THREADPOOL_MAX_WORKER=10
 
-class RawccurrencesConfig(Config):
+class GeneratedGBIFDownloadKeys(Config):
     animals_only: Optional[bool] = Field(default=True, description="Only extract animals from the GBIF")
-    year: Optional[str] = Field(
-        default="2025",
-        description="""
-The 4 digit year. A year of 98 will be interpreted as AD 98.
-Supports range queries, smaller,larger (e.g., 1990,1991, whereas 1991,1990 wouldn\'t work)")
-        """)
+    year_range_start: Optional[int] = Field(
+        default=2025,
+        description="The 4 digit year. A year of 98 will be interpreted as AD 98. (Must be lower than `year_range_end`)")
+    year_range_end: Optional[int] = Field(
+        default=2026,
+        description="The 4 digit year. A year of 98 will be interpreted as AD 98. (Must be greater than `year_range_start`)")
     country: Optional[str] = Field(
         default="FR",
         description="The 2-letter country code (as per ISO-3166-1) of the country in which the occurrence was recorded"
@@ -29,23 +30,77 @@ Supports range queries, smaller,larger (e.g., 1990,1991, whereas 1991,1990 would
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.4.0",
-    description="Extract raw observation occurences of animal species in the French Alps from the GBIF API",
+    code_version="0.1.0",
+    description="",
     tags = {"gbif": ""}
 )
-def raw_occurrences(duckdb: DuckDBResource, config: RawccurrencesConfig) -> dg.MaterializeResult:
+def generated_gbif_download_keys(duckdb: DuckDBResource, config: GeneratedGBIFDownloadKeys) -> dg.MaterializeResult:
+    user="guilhem-sante"
+    pwd="HCG4M%KU*kzxT5Eaf!KP"
+    email="gbif.passcode022@passinbox.com"
+
     with duckdb.get_connection() as conn:
-        params={
-            "year": config.year, # Can be changed for a range (e.g.: 2024,2025)
-            "country": config.country,
-            "geometry": config.geometry
-        }
+        queries=[
+            f"country = {config.country}",
+            f"geometry = {config.geometry}"
+        ]
 
         if config.animals_only:
-            params["kingdomKey"] = ANIMALIA_KINGDOM_KEY
+            queries += [f"kingdomKey = {ANIMALIA_KINGDOM_KEY}"]
 
-        res = occurrences.search(**params)
-        df = pd.DataFrame(res["results"])
+        download_key_map = {}
+
+        for year in range(config.year_range_start, config.year_range_end):
+            res = occurrences.download(queries=queries, user=user, pwd=pwd, email=email)
+
+            if res is None:
+                return
+            
+            download_key_map[year] = res[0]
+
+        data = [(year, download_key) for year, download_key in download_key_map.items()]
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS generated_gbif_download_keys (
+                year INTEGER PRIMARY KEY,
+                downloadKey VARCHAR
+            );
+        """)
+        conn.executemany("""
+            INSERT OR REPLACE INTO generated_gbif_download_keys (year, downloadKey)
+            VALUES (?, ?);
+        """, data)
+        
+        preview_query = "SELECT * FROM generated_gbif_download_keys LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
+        row_count = conn.execute("SELECT COUNT(*) FROM generated_gbif_download_keys").fetchone()
+        count = row_count[0] if row_count else 0
+
+        return dg.MaterializeResult(
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+            }
+        )
+
+class RawOccurrencesConfig(Config):
+    gbif_download_key: str = Field(default="", description="A GBIF download key (for a SIMPLE_CSV format download)")
+
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.5.0",
+    description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
+    tags = {"gbif": ""}
+)
+def raw_occurrences(duckdb: DuckDBResource, config: RawOccurrencesConfig) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        res = occurrences.download_get(key=config.gbif_download_key)
+
+        if res is None:
+            return
+
+        df = pd.read_csv(res["path"])
 
         conn.register("df_view", df)
         conn.execute("CREATE TABLE IF NOT EXISTS raw_occurrences AS SELECT * FROM df_view")
@@ -120,8 +175,6 @@ def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
-
-THREADPOOL_MAX_WORKER=10
 
 def get_vernacular_name(taxonKey):
     try:
