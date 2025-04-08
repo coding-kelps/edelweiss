@@ -1,7 +1,7 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
 
-from edelweiss.species import *
+from edelweiss.occurences import *
 
 defs = dg.Definitions(
     assets=[
