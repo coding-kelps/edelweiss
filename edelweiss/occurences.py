@@ -103,31 +103,36 @@ def get_vernacular_name(taxonKey):
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.1.0",
+    code_version="0.2.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
 )
 def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        df = conn.sql("SELECT * FROM unique_taxon_keys;").df()
+        unique_keys = conn.sql("SELECT taxonKey FROM unique_taxon_keys").fetchall()
+        unique_keys = [key[0] for key in unique_keys]
 
-        unique_keys = df["taxonKey"].unique()
         vernacular_name_map = {}
 
         with ThreadPoolExecutor(max_workers=THREADPOOL_MAX_WORKER) as executor:
             future_to_key = {executor.submit(get_vernacular_name, key): key for key in unique_keys}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
-                try:
-                    vernacular_name_map[key] = future.result()
-                except Exception:
-                    vernacular_name_map[key] = None
+                vernacular_name_map[key] = future.result()
 
-        vernacular_name_map_df = pd.DataFrame(vernacular_name_map.items(), columns=["taxonKey", "vernacularName"])
+        data = [(key, name) for key, name in vernacular_name_map.items()]
 
-        conn.register("vernacular_name_map_df_view", vernacular_name_map_df)
-        conn.execute("CREATE TABLE IF NOT EXISTS vernacular_name_map AS SELECT * FROM vernacular_name_map_df_view")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vernacular_name_map (
+                taxonKey INTEGER PRIMARY KEY,
+                vernacularName VARCHAR
+            );
+        """)
+        conn.executemany("""
+            INSERT OR REPLACE INTO vernacular_name_map (taxonKey, vernacularName)
+            VALUES (?, ?);
+        """, data)
 
         row_count = conn.execute("select count(*) from vernacular_name_map").fetchone()
         count = row_count[0] if row_count else 0
