@@ -114,7 +114,7 @@ def get_vernacular_name(taxonKey):
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.4.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
@@ -147,13 +147,16 @@ def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
 
         preview_query = "SELECT * FROM vernacular_name_map LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("select count(*) from vernacular_name_map").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_map").fetchone()
         count = row_count[0] if row_count else 0
+        missing_vernacular_row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_map WHERE vernacularName IS NULL").fetchone()
+        missing_vernacular_count = missing_vernacular_row_count[0] if missing_vernacular_row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+                "missing_vernacular_row_count": dg.MetadataValue.int(missing_vernacular_count)
             }
         )
 
@@ -193,7 +196,7 @@ def living_species_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.4.0",
     description="Create a new table \"vernacular_name_mapped_occurences\" mapping all vernacular name for each row of \"living_species_occurences\" from \"vernacular_name_map\"",
     deps=[vernacular_name_map, living_species_occurrences]
 )
@@ -211,12 +214,15 @@ def vernacular_name_mapped_occurences(duckdb: DuckDBResource) -> dg.MaterializeR
 
         preview_query = "SELECT * FROM vernacular_name_mapped_occurences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("select count(*) from vernacular_name_mapped_occurences").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurences").fetchone()
         count = row_count[0] if row_count else 0
+        missing_vernacular_row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurences WHERE vernacularName IS NULL").fetchone()
+        missing_vernacular_count = missing_vernacular_row_count[0] if missing_vernacular_row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+                "missing_vernacular_row_count": dg.MetadataValue.int(missing_vernacular_count)
             }
         )
