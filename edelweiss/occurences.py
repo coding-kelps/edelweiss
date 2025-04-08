@@ -1,31 +1,50 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
+from dagster import Config 
 from pygbif import occurrences, species
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, Tuple
+from pydantic import Field
 
 ANIMALIA_KINGDOM_KEY="1"
-FRENCH_ALPS_APPROXIMATE_GEOMETRY="POLYGON((4.63127 44.84424,7.5505 44.84424,7.5505 46.81983,4.63127 46.81983,4.63127 44.84424))"
-GBIF_API_LIMIT=300
+
+class RawccurrencesConfig(Config):
+    animals_only: Optional[bool] = Field(default=True, description="Only extract animals from the GBIF")
+    year: Optional[str] = Field(
+        default="2025",
+        description="""
+The 4 digit year. A year of 98 will be interpreted as AD 98.
+Supports range queries, smaller,larger (e.g., 1990,1991, whereas 1991,1990 wouldn\'t work)")
+        """)
+    country: Optional[str] = Field(
+        default="FR",
+        description="The 2-letter country code (as per ISO-3166-1) of the country in which the occurrence was recorded"
+    )
+    geometry: Optional[str] = Field(
+        default="POLYGON((4.63127 44.84424,7.5505 44.84424,7.5505 46.81983,4.63127 46.81983,4.63127 44.84424))", # Approximate location of the French Alps
+        description="Searches for occurrences inside a polygon described in Well Known Text (WKT) format."
+    )
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.1",
+    code_version="0.4.0",
     description="Extract raw observation occurences of animal species in the French Alps from the GBIF API",
     tags = {"gbif": ""}
 )
-def raw_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def raw_occurrences(duckdb: DuckDBResource, config: RawccurrencesConfig) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        res = occurrences.search(
-            kingdomKey=ANIMALIA_KINGDOM_KEY,
-            year="2025", # Can be changed for a range (e.g.: 2024,2025)
-            continent="europe",
-            country="FR",
-            geometry=FRENCH_ALPS_APPROXIMATE_GEOMETRY,
-            limit=GBIF_API_LIMIT # Actual Max of the API
-        )
+        params={
+            "year": config.year, # Can be changed for a range (e.g.: 2024,2025)
+            "country": config.country,
+            "geometry": config.geometry
+        }
 
+        if config.animals_only:
+            params["kingdomKey"] = ANIMALIA_KINGDOM_KEY
+
+        res = occurrences.search(**params)
         df = pd.DataFrame(res["results"])
 
         conn.register("df_view", df)
