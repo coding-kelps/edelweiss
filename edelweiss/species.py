@@ -6,6 +6,91 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ANIMALIA_KINGDOM_KEY="1"
 FRENCH_ALPS_APPROXIMATE_GEOMETRY="POLYGON((4.63127 44.84424,7.5505 44.84424,7.5505 46.81983,4.63127 46.81983,4.63127 44.84424))"
+GBIF_API_LIMIT=300
+
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="Extract raw observation occurences of animal species in the French Alps from the GBIF API",
+    tags = {"gbif": ""}
+)
+def raw_occurences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        res = occurrences.search(
+            kingdomKey=ANIMALIA_KINGDOM_KEY,
+            year="2025", # Can be changed for a range (e.g.: 2024,2025)
+            continent="europe",
+            country="FR",
+            geometry=FRENCH_ALPS_APPROXIMATE_GEOMETRY,
+            limit=GBIF_API_LIMIT # Actual Max of the API
+        )
+
+        df = pd.DataFrame(res["results"])
+
+        conn.register("df_view", df)
+        conn.execute("CREATE TABLE IF NOT EXISTS raw_occurrences AS SELECT * FROM df_view")
+
+        row_count = conn.execute("select count(*) from raw_occurrences").fetchone()
+        count = row_count[0] if row_count else 0
+
+        return dg.MaterializeResult(
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+            }
+        )
+    
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
+    deps=[raw_occurences]
+)
+def pruned_occurences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        df = conn.sql("SELECT * FROM raw_occurences;").df()
+
+        pruned_df = df[["taxonKey", "scientificName", "coordinateUncertaintyInMeters", "decimalLatitude", "decimalLongitude", "vitality"]]
+
+        conn.register("pruned_df_view", pruned_df)
+        conn.execute("CREATE TABLE IF NOT EXISTS pruned_occurrences AS SELECT * FROM pruned_df_view")
+
+        row_count = conn.execute("select count(*) from pruned_occurrences").fetchone()
+        count = row_count[0] if row_count else 0
+
+        return dg.MaterializeResult(
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+            }
+        )
+
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
+    deps=[raw_occurences]
+)
+def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        df = conn.sql("SELECT * FROM raw_occurences;").df()
+
+        unique_taxon_keys_df = pd.DataFrame(columns=["taxonKey"])
+        unique_taxon_keys_df["taxonKey"] = df["taxonKey"].unique()
+
+        conn.register("unique_taxon_keys_df_view", unique_taxon_keys_df)
+        conn.execute("CREATE TABLE IF NOT EXISTS unique_taxon_keys AS SELECT * FROM unique_taxon_keys_df_view")
+
+        row_count = conn.execute("select count(*) from unique_taxon_keys").fetchone()
+        count = row_count[0] if row_count else 0
+
+        return dg.MaterializeResult(
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+            }
+        )
+
 THREADPOOL_MAX_WORKER=10
 
 def get_vernacular_name(taxonKey):
@@ -18,29 +103,15 @@ def get_vernacular_name(taxonKey):
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
+    code_version="0.1.0",
+    description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
+    deps=[unique_taxon_keys]
 )
-def species(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        res = occurrences.search(
-            kingdomKey=ANIMALIA_KINGDOM_KEY,
-            year="2025", # Can be changed for a range (e.g.: 2024,2025)
-            continent="europe",
-            country="FR",
-            geometry=FRENCH_ALPS_APPROXIMATE_GEOMETRY,
-            limit=300 # Actual Max of the API
-        )
+        df = conn.sql("SELECT * FROM unique_taxon_keys;").df()
 
-        df = pd.DataFrame(res["results"])
-
-        preprocessed_df = df[["taxonKey", "scientificName", "coordinateUncertaintyInMeters", "decimalLatitude", "decimalLongitude", "vitality"]]
-
-        # Remove dead species
-        preprocessed_df = preprocessed_df[preprocessed_df["vitality"] != "dead"]
-
-        # Drop vitality as it is irrelevent after dead species were removed
-        preprocessed_df = preprocessed_df.drop(columns="vitality")
-
-        unique_keys = preprocessed_df["taxonKey"].unique()
+        unique_keys = df["taxonKey"].unique()
         vernacular_name_map = {}
 
         with ThreadPoolExecutor(max_workers=THREADPOOL_MAX_WORKER) as executor:
@@ -52,11 +123,67 @@ def species(duckdb: DuckDBResource) -> dg.MaterializeResult:
                 except Exception:
                     vernacular_name_map[key] = None
 
-        preprocessed_df["vernacularName"] = preprocessed_df["taxonKey"].map(vernacular_name_map)
+        vernacular_name_map_df = pd.DataFrame(vernacular_name_map.items(), columns=["taxonKey", "vernacularName"])
 
-        conn.register("df_view", preprocessed_df)
-        conn.execute("CREATE TABLE IF NOT EXISTS species_data AS SELECT * FROM df_view")
+        conn.register("vernacular_name_map_df_view", vernacular_name_map_df)
+        conn.execute("CREATE TABLE IF NOT EXISTS vernacular_name_map AS SELECT * FROM vernacular_name_map_df_view")
+
+        row_count = conn.execute("select count(*) from vernacular_name_map").fetchone()
+        count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
-            metadata={}
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+            }
+        )
+
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="Create a new table \"living_species_occurences\" removing all row that describe a dead species observation occurences from \"pruned_occurrences\"",
+    deps=[pruned_occurences]
+)
+def living_species_occurences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        df = conn.sql("SELECT * FROM pruned_occurrences;").df()
+
+        living_species_df = df[df["vitality"] != "dead"]
+
+        conn.register("living_species_df_view", living_species_df)
+        conn.execute("CREATE TABLE IF NOT EXISTS living_species_occurences AS SELECT * FROM living_species_df_view")
+
+        row_count = conn.execute("select count(*) from living_species_occurences").fetchone()
+        count = row_count[0] if row_count else 0
+
+        return dg.MaterializeResult(
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+            }
+        )
+
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="Create a new table \"vernacular_name_mapped_occurences\" mapping all vernacular name for each row of \"living_species_occurences\" from \"vernacular_name_map\"",
+    deps=[vernacular_name_map, living_species_occurences]
+)
+def vernacular_name_mapped_occurences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        occurences_df = conn.sql("SELECT * FROM living_species_occurences;").df()
+        vernacular_name_map_df = conn.sql("SELECT * FROM vernacular_name_map;").df()
+
+        vernacular_name_mapped_df = pd.merge(occurences_df, vernacular_name_map_df, on="taxonKey", how="left")
+
+        conn.register("vernacular_name_mapped_df_view", vernacular_name_mapped_df)
+        conn.execute("CREATE TABLE IF NOT EXISTS vernacular_name_mapped_occurences AS SELECT * FROM vernacular_name_mapped_df_view")
+
+        row_count = conn.execute("select count(*) from vernacular_name_mapped_occurences").fetchone()
+        count = row_count[0] if row_count else 0
+
+        return dg.MaterializeResult(
+            metadata={
+                "row_count": dg.MetadataValue.int(count),
+            }
         )

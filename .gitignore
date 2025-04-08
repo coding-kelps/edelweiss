@@ -180,4 +180,4 @@ cython_debug/
 .tmp_dagster_home*
 
 # Dev artefacts
-./data
+data/
