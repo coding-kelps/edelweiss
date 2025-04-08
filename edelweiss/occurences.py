@@ -11,7 +11,7 @@ GBIF_API_LIMIT=300
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.3.1",
     description="Extract raw observation occurences of animal species in the French Alps from the GBIF API",
     tags = {"gbif": ""}
 )
@@ -33,7 +33,7 @@ def raw_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 
         preview_query = "SELECT * FROM raw_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("select count(*) from raw_occurrences").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM raw_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
@@ -46,7 +46,7 @@ def raw_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.3.1",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -66,7 +66,7 @@ def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 
         preview_query = "SELECT * FROM pruned_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("select count(*) from pruned_occurrences").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM pruned_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
@@ -79,7 +79,7 @@ def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.3.1",
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -92,7 +92,7 @@ def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
 
         preview_query = "SELECT * FROM unique_taxon_keys LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("select count(*) from unique_taxon_keys").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM unique_taxon_keys").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
@@ -163,7 +163,7 @@ def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.3.1",
     description="Create a new table \"living_species_occurences\" removing all row that describe a dead species observation occurences from \"pruned_occurrences\"",
     deps=[pruned_occurrences]
 )
@@ -183,7 +183,7 @@ def living_species_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 
         preview_query = "SELECT * FROM living_species_occurences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("select count(*) from living_species_occurences").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM living_species_occurences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
