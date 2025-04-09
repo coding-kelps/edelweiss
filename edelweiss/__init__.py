@@ -1,7 +1,9 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
+from dagster import EnvVar
 
-from edelweiss.occurences import *
+from edelweiss.assets.occurences import *
+from edelweiss.resources.gbif import GBIFAPIResource
 
 defs = dg.Definitions(
     assets=[
@@ -10,8 +12,14 @@ defs = dg.Definitions(
         pruned_occurrences,
         unique_taxon_keys,
         vernacular_name_map,
-        living_species_occurrences,
         vernacular_name_mapped_occurences
     ],
-    resources={"duckdb": DuckDBResource(database="data/edelweiss.duckdb")},
+    resources={
+        "duckdb": DuckDBResource(database="data/edelweiss.duckdb"),
+        "gbif": GBIFAPIResource(
+            username=EnvVar("GBIF_USER"),
+            password=EnvVar("GBIF_PWD"),
+            email=EnvVar("GBIF_EMAIL")
+        ),
+    },
 )

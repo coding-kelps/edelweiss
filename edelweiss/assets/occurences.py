@@ -1,11 +1,13 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
 from dagster import Config 
-from pygbif import occurrences, species
+from pygbif import species
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Tuple
+from typing import Optional
 from pydantic import Field
+from edelweiss.resources.gbif import GBIFAPIResource
+import time
 
 ANIMALIA_KINGDOM_KEY="1"
 THREADPOOL_MAX_WORKER=10
@@ -30,15 +32,11 @@ class GeneratedGBIFDownloadKeys(Config):
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.1.0",
+    code_version="0.2.0",
     description="",
     tags = {"gbif": ""}
 )
-def generated_gbif_download_keys(duckdb: DuckDBResource, config: GeneratedGBIFDownloadKeys) -> dg.MaterializeResult:
-    user="guilhem-sante"
-    pwd="HCG4M%KU*kzxT5Eaf!KP"
-    email="gbif.passcode022@passinbox.com"
-
+def generated_gbif_download_keys(config: GeneratedGBIFDownloadKeys, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         queries=[
             f"country = {config.country}",
@@ -49,23 +47,28 @@ def generated_gbif_download_keys(duckdb: DuckDBResource, config: GeneratedGBIFDo
             queries += [f"kingdomKey = {ANIMALIA_KINGDOM_KEY}"]
 
         download_key_map = {}
-
-        for year in range(config.year_range_start, config.year_range_end):
-            res = occurrences.download(queries=queries, user=user, pwd=pwd, email=email)
-
-            if res is None:
-                return
-            
-            download_key_map[year] = res[0]
-
-        data = [(year, download_key) for year, download_key in download_key_map.items()]
-
         conn.execute("""
             CREATE TABLE IF NOT EXISTS generated_gbif_download_keys (
                 year INTEGER PRIMARY KEY,
                 downloadKey VARCHAR
             );
         """)
+
+        for year in range(config.year_range_start, config.year_range_end):
+            year_already_generated = conn.execute(f"""
+                SELECT 1 FROM generated_gbif_download_keys WHERE year = {year} LIMIT 1
+            """).fetchone()
+
+            if year_already_generated:
+                continue
+
+            year_queries = [*queries, f"year = {year}"]
+
+            key = gbif.request_download(queries=year_queries)
+            download_key_map[year] = key
+
+        data = [(year, download_key) for year, download_key in download_key_map.items()]
+
         conn.executemany("""
             INSERT OR REPLACE INTO generated_gbif_download_keys (year, downloadKey)
             VALUES (?, ?);
@@ -84,26 +87,39 @@ def generated_gbif_download_keys(duckdb: DuckDBResource, config: GeneratedGBIFDo
         )
 
 class RawOccurrencesConfig(Config):
-    gbif_download_key: str = Field(default="", description="A GBIF download key (for a SIMPLE_CSV format download)")
+    key: str = Field(description="A GBIF download key (for a SIMPLE_CSV format download)")
+    readiness_probe_period_min: int = Field(default=5, description="The period of time between each GBIF download readiness check (in minute)")
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.5.0",
+    code_version="0.6.0",
     description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
     tags = {"gbif": ""}
 )
-def raw_occurrences(duckdb: DuckDBResource, config: RawOccurrencesConfig) -> dg.MaterializeResult:
+def raw_occurrences(config: RawOccurrencesConfig, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
+    while True:
+        metadata = gbif.get_download_metadata(key=config.key)
+        
+        if metadata.get("status") == "SUCCEEDED":
+            break
+
+        time.sleep(config.readiness_probe_period_min * 60)
+
+    downloaded_archive_path = gbif.get_download(key=config.key)
+    df = pd.read_csv(downloaded_archive_path, sep='\t')
+
     with duckdb.get_connection() as conn:
-        res = occurrences.download_get(key=config.gbif_download_key)
-
-        if res is None:
-            return
-
-        df = pd.read_csv(res["path"])
-
         conn.register("df_view", df)
-        conn.execute("CREATE TABLE IF NOT EXISTS raw_occurrences AS SELECT * FROM df_view")
+        table_exists = conn.execute("""
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_name = 'raw_occurrences'
+        """).fetchone()[0]
+
+        if table_exists == 0:
+            conn.execute("CREATE TABLE raw_occurrences AS SELECT * FROM df_view")
+        else:
+            conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
 
         preview_query = "SELECT * FROM raw_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
@@ -120,21 +136,20 @@ def raw_occurrences(duckdb: DuckDBResource, config: RawOccurrencesConfig) -> dg.
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.1",
+    code_version="0.4.0",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
 def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS pruned_occurrences AS
+            CREATE OR REPLACE TABLE pruned_occurrences AS
             SELECT 
                 taxonKey, 
                 scientificName, 
                 coordinateUncertaintyInMeters, 
                 decimalLatitude, 
                 decimalLongitude, 
-                vitality
             FROM raw_occurrences;
         """)
 
@@ -153,14 +168,14 @@ def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.1",
+    code_version="0.4.0",
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
 def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS unique_taxon_keys AS
+            CREATE OR REPLACE TABLE unique_taxon_keys AS
             SELECT DISTINCT taxonKey FROM raw_occurrences;
         """)
 
@@ -235,53 +250,20 @@ def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.3.1",
-    description="Create a new table \"living_species_occurences\" removing all row that describe a dead species observation occurences from \"pruned_occurrences\"",
-    deps=[pruned_occurrences]
-)
-def living_species_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
-    with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS living_species_occurences AS
-            SELECT
-                taxonKey, 
-                scientificName, 
-                coordinateUncertaintyInMeters, 
-                decimalLatitude, 
-                decimalLongitude, 
-            FROM pruned_occurrences
-            WHERE vitality IS DISTINCT FROM 'dead';
-        """)
-
-        preview_query = "SELECT * FROM living_species_occurences LIMIT 10"
-        preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM living_species_occurences").fetchone()
-        count = row_count[0] if row_count else 0
-
-        return dg.MaterializeResult(
-            metadata={
-                "row_count": dg.MetadataValue.int(count),
-                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-            }
-        )
-
-@dg.asset(
-    compute_kind="duckdb",
-    group_name="ingestion",
-    code_version="0.4.0",
-    description="Create a new table \"vernacular_name_mapped_occurences\" mapping all vernacular name for each row of \"living_species_occurences\" from \"vernacular_name_map\"",
-    deps=[vernacular_name_map, living_species_occurrences]
+    code_version="0.6.0",
+    description="Create a new table \"vernacular_name_mapped_occurences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
+    deps=[vernacular_name_map, pruned_occurrences]
 )
 def vernacular_name_mapped_occurences(duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS vernacular_name_mapped_occurences AS
+            CREATE OR REPLACE TABLE vernacular_name_mapped_occurences AS
             SELECT 
-                l.*, 
+                p.*, 
                 v.vernacularName
-            FROM living_species_occurences l
+            FROM pruned_occurrences p
             LEFT JOIN vernacular_name_map v
-            ON l.taxonKey = v.taxonKey;
+            ON p.taxonKey = v.taxonKey;
         """)
 
         preview_query = "SELECT * FROM vernacular_name_mapped_occurences LIMIT 10"
