@@ -87,39 +87,44 @@ def generated_gbif_download_keys(config: GeneratedGBIFDownloadKeys, duckdb: Duck
         )
 
 class RawOccurrencesConfig(Config):
-    key: str = Field(description="A GBIF download key (for a SIMPLE_CSV format download)")
-    readiness_probe_period_min: int = Field(default=5, description="The period of time between each GBIF download readiness check (in minute)")
+    readiness_probe_period_min: int = Field(default=2, description="The period of time between each GBIF download readiness check (in minute)")
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.6.0",
+    code_version="0.7.0",
     description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
-    tags = {"gbif": ""}
+    tags = {"gbif": ""},
+    deps=[generated_gbif_download_keys]
 )
 def raw_occurrences(config: RawOccurrencesConfig, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
-    while True:
-        metadata = gbif.get_download_metadata(key=config.key)
-        
-        if metadata.get("status") == "SUCCEEDED":
-            break
-
-        time.sleep(config.readiness_probe_period_min * 60)
-
-    downloaded_archive_path = gbif.get_download(key=config.key)
-    df = pd.read_csv(downloaded_archive_path, sep='\t')
-
     with duckdb.get_connection() as conn:
-        conn.register("df_view", df)
-        table_exists = conn.execute("""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_name = 'raw_occurrences'
-        """).fetchone()[0]
+        df = conn.execute("SELECT * FROM generated_gbif_download_keys").fetchdf()
+        for _, row in df.iterrows():
+            key = row["downloadKey"]
 
-        if table_exists == 0:
-            conn.execute("CREATE TABLE raw_occurrences AS SELECT * FROM df_view")
-        else:
-            conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
+            # Wait for GBIF download to become ready
+            while True:
+                metadata = gbif.get_download_metadata(key=key)
+
+                if metadata.get("status") == "SUCCEEDED":
+                    break
+
+                time.sleep(config.readiness_probe_period_min * 60)
+
+            downloaded_archive_path = gbif.get_download(key=key)
+            df = pd.read_csv(downloaded_archive_path, sep='\t')
+
+            conn.register("df_view", df)
+            table_exists = conn.execute("""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_name = 'raw_occurrences'
+            """).fetchone()[0]
+
+            if table_exists == 0:
+                conn.execute("CREATE TABLE raw_occurrences AS SELECT * FROM df_view")
+            else:
+                conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
 
         preview_query = "SELECT * FROM raw_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
@@ -132,7 +137,7 @@ def raw_occurrences(config: RawOccurrencesConfig, gbif: GBIFAPIResource, duckdb:
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
-    
+
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
@@ -251,13 +256,13 @@ def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
     compute_kind="duckdb",
     group_name="ingestion",
     code_version="0.6.0",
-    description="Create a new table \"vernacular_name_mapped_occurences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
+    description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
     deps=[vernacular_name_map, pruned_occurrences]
 )
-def vernacular_name_mapped_occurences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def vernacular_name_mapped_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
-            CREATE OR REPLACE TABLE vernacular_name_mapped_occurences AS
+            CREATE OR REPLACE TABLE vernacular_name_mapped_occurrences AS
             SELECT 
                 p.*, 
                 v.vernacularName
@@ -266,11 +271,11 @@ def vernacular_name_mapped_occurences(duckdb: DuckDBResource) -> dg.MaterializeR
             ON p.taxonKey = v.taxonKey;
         """)
 
-        preview_query = "SELECT * FROM vernacular_name_mapped_occurences LIMIT 10"
+        preview_query = "SELECT * FROM vernacular_name_mapped_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurences").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurrences").fetchone()
         count = row_count[0] if row_count else 0
-        missing_vernacular_row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurences WHERE vernacularName IS NULL").fetchone()
+        missing_vernacular_row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurrences WHERE vernacularName IS NULL").fetchone()
         missing_vernacular_count = missing_vernacular_row_count[0] if missing_vernacular_row_count else 0
 
         return dg.MaterializeResult(
