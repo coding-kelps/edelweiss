@@ -7,6 +7,7 @@ from edelweiss.resources.gbif import GBIFAPIResource
 
 defs = dg.Definitions(
     assets=[
+        gbif_download_queries,
         generated_gbif_download_keys,
         raw_occurrences,
         pruned_occurrences,

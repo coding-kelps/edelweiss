@@ -1,6 +1,13 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
-from dagster import Config, DynamicPartitionsDefinition
+from dagster import (
+    Config,
+    DynamicPartitionsDefinition,
+    sensor,
+    RunRequest,
+    SkipReason,
+    define_asset_job
+)
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -28,6 +35,87 @@ class GeneratedGBIFDownloadKeys(Config):
         description="Searches for occurrences inside a polygon described in Well Known Text (WKT) format."
     )
 
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="",
+)
+def gbif_download_queries(config: GeneratedGBIFDownloadKeys, duckdb: DuckDBResource)  -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        queries=[
+            f"country = {config.country}",
+            f"geometry = {config.geometry}"
+        ]
+
+        if config.animals_only:
+            queries += [f"kingdomKey = {ANIMALIA_KINGDOM_KEY}"]
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gbif_download_queries (
+                year INTEGER PRIMARY KEY,
+                queries JSON
+            );
+        """)
+
+        queries_map: dict[int, str] = {}
+
+        for year in range(config.year_range_start, config.year_range_end):
+            year_queries = {"year": year, **queries}
+
+            queries_map[year] = json.dumps(year_queries)
+
+        data = [(year, queries_json) for year, queries_json in queries_map.items()]
+        conn.executemany("""
+            INSERT OR REPLACE INTO gbif_download_queries (year, queries)
+            VALUES (?, ?);
+        """, data)
+
+        preview_query = "SELECT * FROM gbif_download_queries LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
+        row_count = conn.execute("SELECT COUNT(*) FROM gbif_download_queries").fetchone()
+        count = row_count[0] if row_count else 0
+
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
+
+gbif_downloads_job = define_asset_job(
+    name="gbif_downloads_job",
+    selection=["generated_gbif_download_keys"],
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="",
+)
+
+@sensor(
+    job=gbif_downloads_job,
+    minimum_interval_seconds=30
+)
+def new_gbif_download_query_sensor(context, duckdb: DuckDBResource):
+    with duckdb.get_connection() as conn:
+        query_rows = conn.execute("SELECT year, queries FROM gbif_download_queries").fetchall()
+
+        processed_rows = conn.execute("SELECT year FROM generated_gbif_download_keys").fetchall()
+
+    processed_years = {row[0] for row in processed_rows}
+    new_rows = [(year, queries) for year, queries in query_rows if year not in processed_years]
+
+    if not new_rows:
+        context.log.info("No new rows detected in gbif_download_queries.")
+        yield SkipReason("No new rows found")
+        return
+
+    for year, queries in new_rows:
+        context.log.info(f"New query detected for year {year}, triggering materialization.")
+        yield RunRequest(
+            run_key=str(year),
+            partition_key=queries,
+        )
+
 gbif_downloads_partitions_def = DynamicPartitionsDefinition(
     name="gbif_download"
 )
@@ -41,7 +129,7 @@ gbif_downloads_partitions_def = DynamicPartitionsDefinition(
     tags = {"gbif": ""}
 )
 def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
-    queries: dict[str, str] = context.partition_key
+    queries: dict[str, str] = json.loads(context.partition_key)
 
     year = queries.get("year")
     if year is None:
@@ -55,19 +143,28 @@ def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIR
         conn.execute("""
             CREATE TABLE IF NOT EXISTS generated_gbif_download_keys (
                 year INTEGER PRIMARY KEY,
-                downloadKey VARCHAR,
-                queries JSON
+                downloadKey VARCHAR
             );
         """)
 
         queries_json = json.dumps(queries)
 
         conn.execute("""
-            INSERT OR REPLACE INTO generated_gbif_download_keys (year, key, queries)
-            VALUES (?, ?, ?);
-        """, (year, key, queries_json))
+            INSERT OR REPLACE INTO generated_gbif_download_keys (year, key)
+            VALUES (?, ?);
+        """, (year, key))
 
-    return dg.MaterializeResult()
+        preview_query = "SELECT * FROM generated_gbif_download_keys LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
+        row_count = conn.execute("SELECT COUNT(*) FROM generated_gbif_download_keys").fetchone()
+        count = row_count[0] if row_count else 0
+
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
 
 raw_occurrences_partitions_def = DynamicPartitionsDefinition(
     name="raw_occurrences"
