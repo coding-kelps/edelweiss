@@ -1,6 +1,10 @@
 from dagster import ConfigurableResource
 from typing import Any
 from pygbif import occurrences, species
+from pydantic import Field
+import time
+
+IN_PREPARATION_DOWNLOADS_LIMIT = 3
 
 class GBIFAPIResource(ConfigurableResource):
   """
@@ -8,9 +12,25 @@ class GBIFAPIResource(ConfigurableResource):
     integration of the [Global Biodiversity Information Facility](https://gbif.org).
   """
 
-  username: str
-  password: str
-  email: str
+  username: str = Field(description="The username of the GBIF account impersonated by the resource.")
+  password: str = Field(description="The password of the GBIF account impersonated by the resource.")
+  email: str = Field(description="The email address of the GBIF account impersonated by the resource.")
+
+  download_availability_probe_period_min: int = Field(
+    default=1,
+    description="The duration between checks for GBIF donwload requests in minutes"
+  )
+
+  def _check_request_download_available(self) -> bool:
+    """
+      Check if the GBIF API enables a new download requets
+      (there is a limit of only 3 download in preparation/running).
+    """
+    res = occurrences.download_list(user=self.username, pwd=self.password)
+
+    in_prepation_downloads = sum(1 for obj in res["results"] if obj["status"] == "PREPARING " or obj["status"] == "RUNNING")
+
+    return in_prepation_downloads < self.IN_PREPARATION_DOWNLOADS_LIMIT
 
   def request_download(self, queries: Any) -> str:
     """
@@ -22,12 +42,18 @@ class GBIFAPIResource(ConfigurableResource):
       Warning: The dataset is generally not immediately available to be downloaded.
     """
 
-    res = occurrences.download(
-        queries=queries,
-        user=self.username,
-        pwd=self.password,
-        email=self.email
-    )
+    while True:
+      if not self._check_request_download_available():
+        time.sleep(self.download_availability_probe_period_min * 60)
+
+      res = occurrences.download(
+          queries=queries,
+          user=self.username,
+          pwd=self.password,
+          email=self.email
+      )
+
+      break
 
     if res is None:
       raise Exception("GBIF download request failed")

@@ -1,13 +1,12 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
-from dagster import Config 
-from pygbif import species
+from dagster import Config, DynamicPartitionsDefinition
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from pydantic import Field
 from edelweiss.resources.gbif import GBIFAPIResource
-import time
+import json
 
 ANIMALIA_KINGDOM_KEY="1"
 THREADPOOL_MAX_WORKER=10
@@ -29,114 +28,89 @@ class GeneratedGBIFDownloadKeys(Config):
         description="Searches for occurrences inside a polygon described in Well Known Text (WKT) format."
     )
 
+gbif_downloads_partitions_def = DynamicPartitionsDefinition(
+    name="gbif_download"
+)
+
 @dg.asset(
     compute_kind="duckdb",
+    partitions_def=gbif_downloads_partitions_def,
     group_name="ingestion",
-    code_version="0.2.0",
+    code_version="0.3.0",
     description="",
     tags = {"gbif": ""}
 )
-def generated_gbif_download_keys(config: GeneratedGBIFDownloadKeys, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
+def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
+    queries: dict[str, str] = context.partition_key
+
+    year = queries.get("year")
+    if year is None:
+        raise Exception("missing expected year query parameter")
+
+    formated_queries = [f"{key} = {value}" for key, value in queries.items()]
+    
+    key = gbif.request_download(queries=formated_queries)
+
     with duckdb.get_connection() as conn:
-        queries=[
-            f"country = {config.country}",
-            f"geometry = {config.geometry}"
-        ]
-
-        if config.animals_only:
-            queries += [f"kingdomKey = {ANIMALIA_KINGDOM_KEY}"]
-
-        download_key_map = {}
         conn.execute("""
             CREATE TABLE IF NOT EXISTS generated_gbif_download_keys (
                 year INTEGER PRIMARY KEY,
-                downloadKey VARCHAR
+                downloadKey VARCHAR,
+                queries JSON
             );
         """)
 
-        for year in range(config.year_range_start, config.year_range_end):
-            year_already_generated = conn.execute(f"""
-                SELECT 1 FROM generated_gbif_download_keys WHERE year = {year} LIMIT 1
-            """).fetchone()
+        queries_json = json.dumps(queries)
 
-            if year_already_generated:
-                continue
+        conn.execute("""
+            INSERT OR REPLACE INTO generated_gbif_download_keys (year, key, queries)
+            VALUES (?, ?, ?);
+        """, (year, key, queries_json))
 
-            year_queries = [*queries, f"year = {year}"]
+    return dg.MaterializeResult()
 
-            key = gbif.request_download(queries=year_queries)
-            download_key_map[year] = key
-
-        data = [(year, download_key) for year, download_key in download_key_map.items()]
-
-        conn.executemany("""
-            INSERT OR REPLACE INTO generated_gbif_download_keys (year, downloadKey)
-            VALUES (?, ?);
-        """, data)
-        
-        preview_query = "SELECT * FROM generated_gbif_download_keys LIMIT 10"
-        preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM generated_gbif_download_keys").fetchone()
-        count = row_count[0] if row_count else 0
-
-        return dg.MaterializeResult(
-            metadata={
-                "row_count": dg.MetadataValue.int(count),
-                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-            }
-        )
-
-class RawOccurrencesConfig(Config):
-    readiness_probe_period_min: int = Field(default=2, description="The period of time between each GBIF download readiness check (in minute)")
+raw_occurrences_partitions_def = DynamicPartitionsDefinition(
+    name="raw_occurrences"
+)
 
 @dg.asset(
     compute_kind="duckdb",
+    partitions_def=raw_occurrences_partitions_def,
     group_name="ingestion",
-    code_version="0.7.0",
+    code_version="0.8.0",
     description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
     tags = {"gbif": ""},
     deps=[generated_gbif_download_keys]
 )
-def raw_occurrences(config: RawOccurrencesConfig, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
+def raw_occurrences(context, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
+    key: str = context.partition_key
+
+    downloaded_archive_path = gbif.get_download(key=key)
+    df = pd.read_csv(downloaded_archive_path, sep='\t')
+
     with duckdb.get_connection() as conn:
-        df = conn.execute("SELECT * FROM generated_gbif_download_keys").fetchdf()
-        for _, row in df.iterrows():
-            key = row["downloadKey"]
+        conn.register("df_view", df)
+        table_exists = conn.execute("""
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_name = 'raw_occurrences'
+        """).fetchone()[0]
 
-            # Wait for GBIF download to become ready
-            while True:
-                metadata = gbif.get_download_metadata(key=key)
-
-                if metadata.get("status") == "SUCCEEDED":
-                    break
-
-                time.sleep(config.readiness_probe_period_min * 60)
-
-            downloaded_archive_path = gbif.get_download(key=key)
-            df = pd.read_csv(downloaded_archive_path, sep='\t')
-
-            conn.register("df_view", df)
-            table_exists = conn.execute("""
-                SELECT COUNT(*) FROM information_schema.tables 
-                WHERE table_name = 'raw_occurrences'
-            """).fetchone()[0]
-
-            if table_exists == 0:
-                conn.execute("CREATE TABLE raw_occurrences AS SELECT * FROM df_view")
-            else:
-                conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
+        if table_exists == 0:
+            conn.execute("CREATE TABLE raw_occurrences AS SELECT * FROM df_view")
+        else:
+            conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
 
         preview_query = "SELECT * FROM raw_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("SELECT COUNT(*) FROM raw_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
-        return dg.MaterializeResult(
-            metadata={
-                "row_count": dg.MetadataValue.int(count),
-                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-            }
-        )
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
 
 @dg.asset(
     compute_kind="duckdb",
