@@ -1,8 +1,13 @@
 from dagster import ConfigurableResource
 from typing import Any
-from pygbif import occurrences
+from pygbif import occurrences, species
 
 class GBIFAPIResource(ConfigurableResource):
+  """
+    A Dagster resource wrapper around the [pygbif](https://github.com/gbif/pygbif)
+    integration of the [Global Biodiversity Information Facility](https://gbif.org).
+  """
+
   username: str
   password: str
   email: str
@@ -62,3 +67,17 @@ class GBIFAPIResource(ConfigurableResource):
       raise Exception("GBIF download get failed")
 
     return res["path"]
+
+  def get_species_info(self, taxonKey: str) -> dict[str, Any]:
+    """
+      Get a species information from its taxon key.
+      A wrapper around the [pygbif.species.name_usage()](https://pygbif.readthedocs.io/en/latest/modules/species.html#pygbif.species.name_usage) method.
+
+      return a dictionnary of information of the corresponding species.
+    """
+    res = species.name_usage(key=taxonKey)
+
+    if res is None:
+      raise Exception("GBIF get species info failed")
+    
+    return res.get("vernacularName", None)

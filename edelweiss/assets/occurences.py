@@ -196,22 +196,15 @@ def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
             }
         )
 
-def get_vernacular_name(taxonKey):
-    try:
-        res = species.name_usage(key=taxonKey)
-        return res.get("vernacularName", None)
-    except Exception as e:
-        return None
-
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.4.0",
+    code_version="0.5.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
 )
-def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def vernacular_name_map(gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         unique_keys = conn.sql("SELECT taxonKey FROM unique_taxon_keys").fetchall()
         unique_keys = [key[0] for key in unique_keys]
@@ -219,7 +212,7 @@ def vernacular_name_map(duckdb: DuckDBResource) -> dg.MaterializeResult:
         vernacular_name_map = {}
 
         with ThreadPoolExecutor(max_workers=THREADPOOL_MAX_WORKER) as executor:
-            future_to_key = {executor.submit(get_vernacular_name, key): key for key in unique_keys}
+            future_to_key = {executor.submit(gbif.get_species_info, key): key for key in unique_keys}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 vernacular_name_map[key] = future.result()
