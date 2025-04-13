@@ -16,12 +16,16 @@ class GBIFAPIResource(ConfigurableResource):
   password: str = Field(description="The password of the GBIF account impersonated by the resource.")
   email: str = Field(description="The email address of the GBIF account impersonated by the resource.")
 
-  download_availability_probe_period_min: int = Field(
+  download_request_availability_probe_period_min: int = Field(
     default=1,
     description="The duration between checks for GBIF donwload requests in minutes"
   )
+  download_availability_probe_period_min: int = Field(
+    default=2,
+    description="The duration between checks for GBIF donwload availability in minutes"
+  )
 
-  def _check_request_download_available(self) -> bool:
+  def _check_download_request_available(self) -> bool:
     """
       Check if the GBIF API enables a new download requets
       (there is a limit of only 3 download in preparation/running).
@@ -30,7 +34,7 @@ class GBIFAPIResource(ConfigurableResource):
 
     in_prepation_downloads = sum(1 for obj in res["results"] if obj["status"] == "PREPARING " or obj["status"] == "RUNNING")
 
-    return in_prepation_downloads < self.IN_PREPARATION_DOWNLOADS_LIMIT
+    return in_prepation_downloads < IN_PREPARATION_DOWNLOADS_LIMIT
 
   def request_download(self, queries: Any) -> str:
     """
@@ -42,25 +46,22 @@ class GBIFAPIResource(ConfigurableResource):
       Warning: The dataset is generally not immediately available to be downloaded.
     """
 
-    while True:
-      if not self._check_request_download_available():
-        time.sleep(self.download_availability_probe_period_min * 60)
+    while not self._check_download_request_available():
+      time.sleep(self.download_request_availability_probe_period_min * 60)
 
-      res = occurrences.download(
-          queries=queries,
-          user=self.username,
-          pwd=self.password,
-          email=self.email
-      )
-
-      break
+    res = occurrences.download(
+        queries=queries,
+        user=self.username,
+        pwd=self.password,
+        email=self.email
+    )
 
     if res is None:
       raise Exception("GBIF download request failed")
     
     return res[0]
   
-  def get_download_metadata(self, key: str) -> str:
+  def _get_download_metadata(self, key: str) -> dict[str, str]:
     """
       Get the metadata of a GBIF download.
       A wrapper around the [pygbif.occurrences.download_meta()](https://pygbif.readthedocs.io/en/latest/modules/occurrence.html#pygbif.occurrences.download_meta) method.
@@ -76,7 +77,12 @@ class GBIFAPIResource(ConfigurableResource):
       raise Exception("GBIF download get metadata failed")
 
     return res
+  
+  def _check_download_availability(self, key: str) -> bool:
+    metadata = self._get_download_metadata(key)
 
+    return metadata.get("status") == "SUCCEEDED"
+  
   def get_download(self, key: str) -> str:
     """
       Download a GBIF download as a archive file.
@@ -84,6 +90,9 @@ class GBIFAPIResource(ConfigurableResource):
 
       Return the path of the downloaded file.
     """
+
+    while not self._check_download_availability(key=key):
+      time.sleep(self.download_availability_probe_period_min * 60)    
 
     res = occurrences.download_get(
         key=key,

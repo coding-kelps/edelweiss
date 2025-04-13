@@ -1,139 +1,33 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
-from dagster import (
-    Config,
-    DynamicPartitionsDefinition,
-    sensor,
-    RunRequest,
-    SkipReason,
-    define_asset_job
-)
+from dagster import StaticPartitionsDefinition
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
-from pydantic import Field
 from edelweiss.resources.gbif import GBIFAPIResource
-import json
 
-ANIMALIA_KINGDOM_KEY="1"
 THREADPOOL_MAX_WORKER=10
 
-class GeneratedGBIFDownloadKeys(Config):
-    animals_only: Optional[bool] = Field(default=True, description="Only extract animals from the GBIF")
-    year_range_start: Optional[int] = Field(
-        default=2025,
-        description="The 4 digit year. A year of 98 will be interpreted as AD 98. (Must be lower than `year_range_end`)")
-    year_range_end: Optional[int] = Field(
-        default=2026,
-        description="The 4 digit year. A year of 98 will be interpreted as AD 98. (Must be greater than `year_range_start`)")
-    country: Optional[str] = Field(
-        default="FR",
-        description="The 2-letter country code (as per ISO-3166-1) of the country in which the occurrence was recorded"
-    )
-    geometry: Optional[str] = Field(
-        default="POLYGON((4.63127 44.84424,7.5505 44.84424,7.5505 46.81983,4.63127 46.81983,4.63127 44.84424))", # Approximate location of the French Alps
-        description="Searches for occurrences inside a polygon described in Well Known Text (WKT) format."
-    )
+gbif_downloads_yearly_partitions_def = StaticPartitionsDefinition([
+    "2015", "2016", "2017", "2018", "2019", "2020",
+    "2021", "2022", "2023", "2024", "2025"
+])
 
 @dg.asset(
     compute_kind="duckdb",
-    group_name="ingestion",
-    code_version="0.1.0",
-    description="",
-)
-def gbif_download_queries(config: GeneratedGBIFDownloadKeys, duckdb: DuckDBResource)  -> dg.MaterializeResult:
-    with duckdb.get_connection() as conn:
-        queries=[
-            f"country = {config.country}",
-            f"geometry = {config.geometry}"
-        ]
-
-        if config.animals_only:
-            queries += [f"kingdomKey = {ANIMALIA_KINGDOM_KEY}"]
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS gbif_download_queries (
-                year INTEGER PRIMARY KEY,
-                queries JSON
-            );
-        """)
-
-        queries_map: dict[int, str] = {}
-
-        for year in range(config.year_range_start, config.year_range_end):
-            year_queries = {"year": year, **queries}
-
-            queries_map[year] = json.dumps(year_queries)
-
-        data = [(year, queries_json) for year, queries_json in queries_map.items()]
-        conn.executemany("""
-            INSERT OR REPLACE INTO gbif_download_queries (year, queries)
-            VALUES (?, ?);
-        """, data)
-
-        preview_query = "SELECT * FROM gbif_download_queries LIMIT 10"
-        preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM gbif_download_queries").fetchone()
-        count = row_count[0] if row_count else 0
-
-    return dg.MaterializeResult(
-        metadata={
-            "row_count": dg.MetadataValue.int(count),
-            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-        }
-    )
-
-gbif_downloads_job = define_asset_job(
-    name="gbif_downloads_job",
-    selection=["generated_gbif_download_keys"],
-    group_name="ingestion",
-    code_version="0.1.0",
-    description="",
-)
-
-@sensor(
-    job=gbif_downloads_job,
-    minimum_interval_seconds=30
-)
-def new_gbif_download_query_sensor(context, duckdb: DuckDBResource):
-    with duckdb.get_connection() as conn:
-        query_rows = conn.execute("SELECT year, queries FROM gbif_download_queries").fetchall()
-
-        processed_rows = conn.execute("SELECT year FROM generated_gbif_download_keys").fetchall()
-
-    processed_years = {row[0] for row in processed_rows}
-    new_rows = [(year, queries) for year, queries in query_rows if year not in processed_years]
-
-    if not new_rows:
-        context.log.info("No new rows detected in gbif_download_queries.")
-        yield SkipReason("No new rows found")
-        return
-
-    for year, queries in new_rows:
-        context.log.info(f"New query detected for year {year}, triggering materialization.")
-        yield RunRequest(
-            run_key=str(year),
-            partition_key=queries,
-        )
-
-gbif_downloads_partitions_def = DynamicPartitionsDefinition(
-    name="gbif_download"
-)
-
-@dg.asset(
-    compute_kind="duckdb",
-    partitions_def=gbif_downloads_partitions_def,
+    partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
     code_version="0.3.0",
     description="",
     tags = {"gbif": ""}
 )
 def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
-    queries: dict[str, str] = json.loads(context.partition_key)
-
-    year = queries.get("year")
-    if year is None:
-        raise Exception("missing expected year query parameter")
+    year = context.partition_key
+    queries = {
+        "country": "FR",
+        "geometry": "POLYGON((4.63127 44.84424,7.5505 44.84424,7.5505 46.81983,4.63127 46.81983,4.63127 44.84424))",
+        "kingdomKey": "1",
+        "year": year
+    }
 
     formated_queries = [f"{key} = {value}" for key, value in queries.items()]
     
@@ -143,11 +37,9 @@ def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIR
         conn.execute("""
             CREATE TABLE IF NOT EXISTS generated_gbif_download_keys (
                 year INTEGER PRIMARY KEY,
-                downloadKey VARCHAR
+                key VARCHAR
             );
         """)
-
-        queries_json = json.dumps(queries)
 
         conn.execute("""
             INSERT OR REPLACE INTO generated_gbif_download_keys (year, key)
@@ -166,13 +58,9 @@ def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIR
         }
     )
 
-raw_occurrences_partitions_def = DynamicPartitionsDefinition(
-    name="raw_occurrences"
-)
-
 @dg.asset(
     compute_kind="duckdb",
-    partitions_def=raw_occurrences_partitions_def,
+    partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
     code_version="0.8.0",
     description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
@@ -180,7 +68,18 @@ raw_occurrences_partitions_def = DynamicPartitionsDefinition(
     deps=[generated_gbif_download_keys]
 )
 def raw_occurrences(context, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
-    key: str = context.partition_key
+    year = context.partition_key
+
+    with duckdb.get_connection() as conn:
+        row = conn.execute(
+            "SELECT key FROM generated_gbif_download_keys WHERE year = ?",
+            (year,)
+        ).fetchone()
+
+        if row is None:
+            raise ValueError(f"No download key found for year {year}")
+
+        key = row[0]
 
     downloaded_archive_path = gbif.get_download(key=key)
     df = pd.read_csv(downloaded_archive_path, sep='\t')
