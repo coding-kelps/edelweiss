@@ -24,4 +24,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 dagster-webserver = "^1.10.9"
+duckdb = "^1.2.2"
+ipykernel = "^6.29.5"
+ipywidgets = "^8.1.6"
 

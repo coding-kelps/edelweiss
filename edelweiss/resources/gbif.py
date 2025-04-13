@@ -32,7 +32,8 @@ class GBIFAPIResource(ConfigurableResource):
     """
     res = occurrences.download_list(user=self.username, pwd=self.password)
 
-    in_prepation_downloads = sum(1 for obj in res["results"] if obj["status"] == "PREPARING " or obj["status"] == "RUNNING")
+    # https://gbif.github.io/parsers/apidocs/org/gbif/api/model/occurrence/Download.Status.html
+    in_prepation_downloads = sum(1 for obj in res["results"] if obj["status"] == "PREPARING" or obj["status"] == "RUNNING")
 
     return in_prepation_downloads < IN_PREPARATION_DOWNLOADS_LIMIT
 

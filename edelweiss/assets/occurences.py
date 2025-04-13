@@ -86,13 +86,68 @@ def raw_occurrences(context, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> d
 
     with duckdb.get_connection() as conn:
         conn.register("df_view", df)
+
         table_exists = conn.execute("""
             SELECT COUNT(*) FROM information_schema.tables 
             WHERE table_name = 'raw_occurrences'
         """).fetchone()[0]
-
+        
         if table_exists == 0:
-            conn.execute("CREATE TABLE raw_occurrences AS SELECT * FROM df_view")
+            # https://techdocs.gbif.org/en/data-use/download-formats
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS raw_occurrences (
+                    gbifID VARCHAR,
+                    datasetKey VARCHAR,
+                    occurrenceID VARCHAR,
+                    kingdom VARCHAR,
+                    phylum VARCHAR,
+                    "class" VARCHAR,
+                    "order" VARCHAR,
+                    family VARCHAR,
+                    genus VARCHAR,
+                    species VARCHAR,
+                    infraspecificEpithet VARCHAR,
+                    taxonRank VARCHAR,
+                    scientificName VARCHAR,
+                    verbatimScientificName VARCHAR,
+                    verbatimScientificNameAuthorship VARCHAR,
+                    countryCode VARCHAR,
+                    locality VARCHAR,
+                    stateProvince VARCHAR,
+                    occurrenceStatus VARCHAR,
+                    individualCount DOUBLE,
+                    publishingOrgKey VARCHAR,
+                    decimalLatitude DOUBLE,
+                    decimalLongitude DOUBLE,
+                    coordinateUncertaintyInMeters DOUBLE,
+                    coordinatePrecision DOUBLE,
+                    elevation DOUBLE,
+                    elevationAccuracy DOUBLE,
+                    depth DOUBLE,
+                    depthAccuracy VARCHAR,
+                    eventDate VARCHAR,
+                    day BIGINT,
+                    month BIGINT,
+                    year BIGINT,
+                    taxonKey BIGINT,
+                    speciesKey DOUBLE,
+                    basisOfRecord VARCHAR,
+                    institutionCode VARCHAR,
+                    collectionCode VARCHAR,
+                    catalogNumber VARCHAR,
+                    recordNumber VARCHAR,
+                    identifiedBy VARCHAR,
+                    dateIdentified VARCHAR,
+                    license VARCHAR,
+                    rightsHolder VARCHAR,
+                    recordedBy VARCHAR,
+                    typeStatus VARCHAR,
+                    establishmentMeans VARCHAR,
+                    lastInterpreted VARCHAR,
+                    mediaType VARCHAR,
+                    issue VARCHAR
+                );
+            """)
         else:
             conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
 
