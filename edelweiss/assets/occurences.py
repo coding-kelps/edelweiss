@@ -1,6 +1,6 @@
 from dagster_duckdb import DuckDBResource
 import dagster as dg
-from dagster import StaticPartitionsDefinition
+from dagster import StaticPartitionsDefinition, AssetExecutionContext
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from edelweiss.resources.gbif import GBIFAPIResource
@@ -16,11 +16,11 @@ gbif_downloads_yearly_partitions_def = StaticPartitionsDefinition([
     compute_kind="duckdb",
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
-    code_version="0.3.0",
+    code_version="0.4.0",
     description="",
     tags = {"gbif": ""}
 )
-def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
+def generated_gbif_download_keys(context: AssetExecutionContext, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
     year = context.partition_key
     queries = {
         "country": "FR",
@@ -28,10 +28,8 @@ def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIR
         "kingdomKey": "1",
         "year": year
     }
-
-    formated_queries = [f"{key} = {value}" for key, value in queries.items()]
     
-    key = gbif.request_download(queries=formated_queries)
+    key = gbif.request_download(queries=queries)
 
     with duckdb.get_connection() as conn:
         conn.execute("""
@@ -67,7 +65,7 @@ def generated_gbif_download_keys(context, duckdb: DuckDBResource, gbif: GBIFAPIR
     tags = {"gbif": ""},
     deps=[generated_gbif_download_keys]
 )
-def raw_occurrences(context, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
+def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     year = context.partition_key
 
     with duckdb.get_connection() as conn:
@@ -170,7 +168,7 @@ def raw_occurrences(context, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> d
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
-def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE TABLE pruned_occurrences AS
@@ -202,7 +200,7 @@ def pruned_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
-def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE TABLE unique_taxon_keys AS
@@ -229,7 +227,7 @@ def unique_taxon_keys(duckdb: DuckDBResource) -> dg.MaterializeResult:
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
 )
-def vernacular_name_map(gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
+def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         unique_keys = conn.sql("SELECT taxonKey FROM unique_taxon_keys").fetchall()
         unique_keys = [key[0] for key in unique_keys]
@@ -277,7 +275,7 @@ def vernacular_name_map(gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.Mat
     description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
     deps=[vernacular_name_map, pruned_occurrences]
 )
-def vernacular_name_mapped_occurrences(duckdb: DuckDBResource) -> dg.MaterializeResult:
+def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE TABLE vernacular_name_mapped_occurrences AS

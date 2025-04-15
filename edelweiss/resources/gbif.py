@@ -3,6 +3,8 @@ from typing import Any
 from pygbif import occurrences, species
 from pydantic import Field
 import time
+import requests
+import json
 
 IN_PREPARATION_DOWNLOADS_LIMIT = 3
 
@@ -25,19 +27,57 @@ class GBIFAPIResource(ConfigurableResource):
     description="The duration between checks for GBIF donwload availability in minutes"
   )
 
+  def _get_account_downloads(self) -> list[dict[str, Any]]:
+    res = occurrences.download_list(user=self.username, pwd=self.password)
+
+    if not res:
+      raise Exception("no response")
+    
+    downloads = res["results"]
+
+    return downloads
+
   def _check_download_request_available(self) -> bool:
     """
       Check if the GBIF API enables a new download requets
       (there is a limit of only 3 download in preparation/running).
     """
-    res = occurrences.download_list(user=self.username, pwd=self.password)
+
+    downloads = self._get_account_downloads()
 
     # https://gbif.github.io/parsers/apidocs/org/gbif/api/model/occurrence/Download.Status.html
-    in_prepation_downloads = sum(1 for obj in res["results"] if obj["status"] == "PREPARING" or obj["status"] == "RUNNING")
+    in_prepation_downloads = sum(1 for obj in downloads if obj["status"] == "PREPARING" or obj["status"] == "RUNNING")
 
     return in_prepation_downloads < IN_PREPARATION_DOWNLOADS_LIMIT
 
-  def request_download(self, queries: Any) -> str:
+  def _queries_to_request(self, queries: dict[str, str]) -> dict[str, str]:
+    res = requests.get(
+      url="https://api.gbif.org/v1/occurrence/download/request/predicate",
+      headers={
+          "Content-Type": "application/json"
+      },
+      params={**queries, "format": "SIMPLE_CSV"},
+    )
+
+    predicates = json.loads(res.text)
+
+    return predicates
+
+  def _find_similar_download(self, queries: dict[str, str]) -> str | None:
+    request = self._queries_to_request(queries=queries)
+    downloads = self._get_account_downloads()
+
+    for download in downloads:
+      if download["request"]["predicate"] == request["predicate"] \
+          and download["request"]["format"] == request["format"] \
+          and download["request"]["type"] == request["type"] \
+          and (download["status"] == "PREPARING" \
+              or download["status"] == "RUNNING" \
+              or download["status"] == "SUCCEEDED"):
+        return download["key"]
+    return None
+
+  def request_download(self, queries: dict[str, str]) -> str:
     """
       Requests GBIF to generate a dataset of occurrences from a set of queries.
       A wrapper around the [pygbif.occurrences.download()](https://pygbif.readthedocs.io/en/latest/modules/occurrence.html#pygbif.occurrences.download) method.
@@ -46,12 +86,17 @@ class GBIFAPIResource(ConfigurableResource):
 
       Warning: The dataset is generally not immediately available to be downloaded.
     """
-
+    key = self._find_similar_download(queries=queries)
+    if key:
+      return key
+    
     while not self._check_download_request_available():
       time.sleep(self.download_request_availability_probe_period_min * 60)
 
+    formated_queries = [f"{key} = {value}" for key, value in queries.items()]
+
     res = occurrences.download(
-        queries=queries,
+        queries=formated_queries,
         user=self.username,
         pwd=self.password,
         email=self.email
