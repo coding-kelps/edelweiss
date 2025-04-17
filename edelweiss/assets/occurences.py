@@ -94,7 +94,7 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
             # https://techdocs.gbif.org/en/data-use/download-formats
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS raw_occurrences (
-                    gbifID VARCHAR,
+                    gbifID VARCHAR PRIMARY KEY,
                     datasetKey VARCHAR,
                     occurrenceID VARCHAR,
                     kingdom VARCHAR,
@@ -164,20 +164,46 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.4.0",
+    code_version="0.5.0",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
 def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
-            CREATE OR REPLACE TABLE pruned_occurrences AS
-            SELECT 
-                taxonKey, 
-                scientificName, 
-                coordinateUncertaintyInMeters, 
-                decimalLatitude, 
-                decimalLongitude, 
+            CREATE TABLE IF NOT EXISTS pruned_occurrences (
+                gbifID VARCHAR PRIMARY KEY,
+                taxonKey BIGINT,
+                scientificName VARCHAR,
+                decimalLatitude DOUBLE,
+                decimalLongitude DOUBLE,
+                coordinateUncertaintyInMeters DOUBLE,
+                coordinatePrecision DOUBLE,
+                elevation DOUBLE,
+                elevationAccuracy DOUBLE,
+                depth DOUBLE,
+                depthAccuracy VARCHAR,
+                day BIGINT,
+                month BIGINT,
+                year BIGINT
+            );
+        """)
+        conn.execute("""
+            INSERT INTO pruned_occurrences (
+                gbifID,
+                taxonKey,
+                scientificName,
+                coordinateUncertaintyInMeters,
+                decimalLatitude,
+                decimalLongitude
+            )
+            SELECT
+                gbifID,
+                taxonKey,
+                scientificName,
+                coordinateUncertaintyInMeters,
+                decimalLatitude,
+                decimalLongitude
             FROM raw_occurrences;
         """)
 
@@ -222,7 +248,7 @@ def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) ->
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.5.0",
+    code_version="0.6.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
@@ -235,43 +261,42 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
         vernacular_name_map = {}
 
         with ThreadPoolExecutor(max_workers=THREADPOOL_MAX_WORKER) as executor:
-            future_to_key = {executor.submit(gbif.get_species_info, key): key for key in unique_keys}
+            future_to_key = {executor.submit(gbif.get_species_vernacular_names, key): key for key in unique_keys}
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 vernacular_name_map[key] = future.result()
 
-        data = [(key, name) for key, name in vernacular_name_map.items()]
+        data = [(key, names["deu"], names["eng"], names["fra"]) for key, names in vernacular_name_map.items()]
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vernacular_name_map (
                 taxonKey INTEGER PRIMARY KEY,
-                vernacularName VARCHAR
+                vernacularNameDeu VARCHAR,
+                vernacularNameEng VARCHAR,
+                vernacularNameFra VARCHAR,
             );
         """)
         conn.executemany("""
-            INSERT OR REPLACE INTO vernacular_name_map (taxonKey, vernacularName)
-            VALUES (?, ?);
+            INSERT OR REPLACE INTO vernacular_name_map (taxonKey, vernacularNameDeu, vernacularNameEng, vernacularNameFra)
+            VALUES (?, ?, ?, ?);
         """, data)
 
         preview_query = "SELECT * FROM vernacular_name_map LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_map").fetchone()
         count = row_count[0] if row_count else 0
-        missing_vernacular_row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_map WHERE vernacularName IS NULL").fetchone()
-        missing_vernacular_count = missing_vernacular_row_count[0] if missing_vernacular_row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-                "missing_vernacular_row_count": dg.MetadataValue.int(missing_vernacular_count)
             }
         )
 
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.6.0",
+    code_version="0.7.0",
     description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
     deps=[vernacular_name_map, pruned_occurrences]
 )
@@ -281,7 +306,9 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
             CREATE OR REPLACE TABLE vernacular_name_mapped_occurrences AS
             SELECT 
                 p.*, 
-                v.vernacularName
+                v.vernacularNameDeu,
+                v.vernacularNameEng,
+                v.vernacularNameFra
             FROM pruned_occurrences p
             LEFT JOIN vernacular_name_map v
             ON p.taxonKey = v.taxonKey;
@@ -291,13 +318,10 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
         preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurrences").fetchone()
         count = row_count[0] if row_count else 0
-        missing_vernacular_row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurrences WHERE vernacularName IS NULL").fetchone()
-        missing_vernacular_count = missing_vernacular_row_count[0] if missing_vernacular_row_count else 0
 
         return dg.MaterializeResult(
             metadata={
                 "row_count": dg.MetadataValue.int(count),
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-                "missing_vernacular_row_count": dg.MetadataValue.int(missing_vernacular_count)
             }
         )

@@ -149,16 +149,25 @@ class GBIFAPIResource(ConfigurableResource):
 
     return res["path"]
 
-  def get_species_info(self, taxonKey: str) -> dict[str, Any]:
-    """
-      Get a species information from its taxon key.
-      A wrapper around the [pygbif.species.name_usage()](https://pygbif.readthedocs.io/en/latest/modules/species.html#pygbif.species.name_usage) method.
+  def get_species_vernacular_names(self, taxonKey: str) -> dict[str, str]:
+    res = requests.get(
+      url=f"https://api.gbif.org/v1/species/{taxonKey}/vernacularNames",
+      headers={
+          "accept": "application/json"
+      },
+    )
 
-      return a dictionnary of information of the corresponding species.
-    """
-    res = species.name_usage(key=taxonKey)
+    data: dict[str, Any] = json.loads(res.text)
 
-    if res is None:
-      raise Exception("GBIF get species info failed")
-    
-    return res.get("vernacularName", None)
+    vernaculars = {
+      "deu": None,
+      "fra": None,
+      "eng": None
+    }
+
+    for item in data.get("results", []):
+      lang = item.get("language")
+      if lang in vernaculars and vernaculars[lang] is None:
+        vernaculars[lang] = item.get("vernacularName")
+
+    return vernaculars
