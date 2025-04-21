@@ -1,0 +1,18 @@
+[[providers]]
+name = "doronic"
+type = "postgis"
+uri = "postgres://tegola:supersecret@postgres:5432/tegola"
+srid = 4326
+
+    [[providers.layers]]
+    name = "occurrences"
+    tablename = "gbif_by_taxon"
+    geometry_fieldname = "geom"
+    id_fieldname = "taxon_key"
+
+[[maps]]
+name = "occurrences"
+tile_buffer = 0
+
+    [[maps.layers]]
+    provider_layer = "doronic.occurrences"

@@ -325,3 +325,4 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
+

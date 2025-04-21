@@ -1,0 +1,38 @@
+services:
+  postgres:
+    container_name: postgres
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tegola}
+      POSTGRES_USER: ${POSTGRES_USER:-tegola}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supersecret}
+      PGDATA: /data/postgres
+    volumes:
+       - postgres:/data/postgres
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tegola}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  tegola:
+    container_name: tegola
+    image: gospatial/tegola
+    volumes:
+      - ./tegola_config:/opt/tegola_config
+    ports:
+      - "8080:8080"
+    command:
+      - serve
+      - --config
+      - /opt/tegola_config/config.toml
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+    postgres:
