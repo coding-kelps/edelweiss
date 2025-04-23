@@ -16,7 +16,7 @@ gbif_downloads_yearly_partitions_def = StaticPartitionsDefinition([
     compute_kind="duckdb",
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
-    code_version="0.4.0",
+    code_version="0.5.0",
     description="",
     tags = {"gbif": ""}
 )
@@ -60,7 +60,7 @@ def generated_gbif_download_keys(context: AssetExecutionContext, duckdb: DuckDBR
     compute_kind="duckdb",
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
-    code_version="0.8.0",
+    code_version="0.9.0",
     description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
     tags = {"gbif": ""},
     deps=[generated_gbif_download_keys]
@@ -94,9 +94,9 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
             # https://techdocs.gbif.org/en/data-use/download-formats
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS raw_occurrences (
-                    gbifID VARCHAR PRIMARY KEY,
-                    datasetKey VARCHAR,
-                    occurrenceID VARCHAR,
+                    gbif_id VARCHAR PRIMARY KEY,
+                    dataset_key VARCHAR,
+                    occurrence_id VARCHAR,
                     kingdom VARCHAR,
                     phylum VARCHAR,
                     "class" VARCHAR,
@@ -104,45 +104,45 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
                     family VARCHAR,
                     genus VARCHAR,
                     species VARCHAR,
-                    infraspecificEpithet VARCHAR,
-                    taxonRank VARCHAR,
-                    scientificName VARCHAR,
-                    verbatimScientificName VARCHAR,
-                    verbatimScientificNameAuthorship VARCHAR,
-                    countryCode VARCHAR,
+                    infraspecific_epithet VARCHAR,
+                    taxon_rank VARCHAR,
+                    scientific_name VARCHAR,
+                    verbatim_scientific_name VARCHAR,
+                    verbatim_scientific_name_authorship VARCHAR,
+                    country_code VARCHAR,
                     locality VARCHAR,
-                    stateProvince VARCHAR,
-                    occurrenceStatus VARCHAR,
-                    individualCount DOUBLE,
-                    publishingOrgKey VARCHAR,
-                    decimalLatitude DOUBLE,
-                    decimalLongitude DOUBLE,
-                    coordinateUncertaintyInMeters DOUBLE,
-                    coordinatePrecision DOUBLE,
+                    state_province VARCHAR,
+                    occurrence_status VARCHAR,
+                    individual_count DOUBLE,
+                    publishing_org_key VARCHAR,
+                    decimal_latitude DOUBLE,
+                    decimal_longitude DOUBLE,
+                    coordinate_uncertainty_in_meters DOUBLE,
+                    coordinate_precision DOUBLE,
                     elevation DOUBLE,
-                    elevationAccuracy DOUBLE,
+                    elevation_accuracy DOUBLE,
                     depth DOUBLE,
-                    depthAccuracy VARCHAR,
-                    eventDate VARCHAR,
+                    depth_accuracy VARCHAR,
+                    event_date VARCHAR,
                     day BIGINT,
                     month BIGINT,
                     year BIGINT,
-                    taxonKey BIGINT,
-                    speciesKey DOUBLE,
-                    basisOfRecord VARCHAR,
-                    institutionCode VARCHAR,
-                    collectionCode VARCHAR,
-                    catalogNumber VARCHAR,
-                    recordNumber VARCHAR,
-                    identifiedBy VARCHAR,
-                    dateIdentified VARCHAR,
+                    taxon_key BIGINT,
+                    species_key DOUBLE,
+                    basis_of_record VARCHAR,
+                    institution_code VARCHAR,
+                    collection_code VARCHAR,
+                    catalog_number VARCHAR,
+                    record_number VARCHAR,
+                    identified_by VARCHAR,
+                    date_identified VARCHAR,
                     license VARCHAR,
-                    rightsHolder VARCHAR,
-                    recordedBy VARCHAR,
-                    typeStatus VARCHAR,
-                    establishmentMeans VARCHAR,
-                    lastInterpreted VARCHAR,
-                    mediaType VARCHAR,
+                    rights_holder VARCHAR,
+                    recorded_by VARCHAR,
+                    type_status VARCHAR,
+                    establishment_means VARCHAR,
+                    last_interpreted VARCHAR,
+                    media_type VARCHAR,
                     issue VARCHAR
                 );
             """)
@@ -164,7 +164,7 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.5.0",
+    code_version="0.6.0",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -172,17 +172,17 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pruned_occurrences (
-                gbifID VARCHAR PRIMARY KEY,
-                taxonKey BIGINT,
-                scientificName VARCHAR,
-                decimalLatitude DOUBLE,
-                decimalLongitude DOUBLE,
-                coordinateUncertaintyInMeters DOUBLE,
-                coordinatePrecision DOUBLE,
+                gbif_id VARCHAR PRIMARY KEY,
+                taxon_key BIGINT,
+                scientific_name VARCHAR,
+                decimal_latitude DOUBLE,
+                decimal_longitude DOUBLE,
+                coordinate_uncertainty_in_meters DOUBLE,
+                coordinate_precision DOUBLE,
                 elevation DOUBLE,
-                elevationAccuracy DOUBLE,
+                elevation_accuracy DOUBLE,
                 depth DOUBLE,
-                depthAccuracy VARCHAR,
+                depth_accuracy VARCHAR,
                 day BIGINT,
                 month BIGINT,
                 year BIGINT
@@ -190,20 +190,20 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
         """)
         conn.execute("""
             INSERT INTO pruned_occurrences (
-                gbifID,
-                taxonKey,
-                scientificName,
-                coordinateUncertaintyInMeters,
-                decimalLatitude,
-                decimalLongitude
+                gbif_id,
+                taxon_key,
+                scientific_name,
+                coordinate_uncertainty_in_meters,
+                decimal_latitude,
+                decimal_longitude
             )
             SELECT
-                gbifID,
-                taxonKey,
-                scientificName,
-                coordinateUncertaintyInMeters,
-                decimalLatitude,
-                decimalLongitude
+                gbif_id,
+                taxon_key,
+                scientific_name,
+                coordinate_uncertainty_in_meters,
+                decimal_latitude,
+                decimal_longitude
             FROM raw_occurrences;
         """)
 
@@ -222,7 +222,7 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.4.0",
+    code_version="0.5.0",
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -230,7 +230,7 @@ def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) ->
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE TABLE unique_taxon_keys AS
-            SELECT DISTINCT taxonKey FROM raw_occurrences;
+            SELECT DISTINCT taxon_key FROM raw_occurrences;
         """)
 
         preview_query = "SELECT * FROM unique_taxon_keys LIMIT 10"
@@ -248,14 +248,14 @@ def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) ->
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.6.0",
+    code_version="0.7.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
 )
 def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        unique_keys = conn.sql("SELECT taxonKey FROM unique_taxon_keys").fetchall()
+        unique_keys = conn.sql("SELECT taxon_key FROM unique_taxon_keys").fetchall()
         unique_keys = [key[0] for key in unique_keys]
 
         vernacular_name_map = {}
@@ -270,14 +270,14 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vernacular_name_map (
-                taxonKey INTEGER PRIMARY KEY,
-                vernacularNameDeu VARCHAR,
-                vernacularNameEng VARCHAR,
-                vernacularNameFra VARCHAR,
+                taxon_key INTEGER PRIMARY KEY,
+                vernacular_name_deu VARCHAR,
+                vernacular_name_eng VARCHAR,
+                vernacular_name_fra VARCHAR,
             );
         """)
         conn.executemany("""
-            INSERT OR REPLACE INTO vernacular_name_map (taxonKey, vernacularNameDeu, vernacularNameEng, vernacularNameFra)
+            INSERT OR REPLACE INTO vernacular_name_map (taxon_key, vernacular_name_deu, vernacular_name_eng, vernacular_name_fra)
             VALUES (?, ?, ?, ?);
         """, data)
 
@@ -296,7 +296,7 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
 @dg.asset(
     compute_kind="duckdb",
     group_name="ingestion",
-    code_version="0.7.0",
+    code_version="0.8.0",
     description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
     deps=[vernacular_name_map, pruned_occurrences]
 )
@@ -306,12 +306,12 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
             CREATE OR REPLACE TABLE vernacular_name_mapped_occurrences AS
             SELECT 
                 p.*, 
-                v.vernacularNameDeu,
-                v.vernacularNameEng,
-                v.vernacularNameFra
+                v.vernacular_name_deu,
+                v.vernacular_name_eng,
+                v.vernacular_name_fra
             FROM pruned_occurrences p
             LEFT JOIN vernacular_name_map v
-            ON p.taxonKey = v.taxonKey;
+            ON p.taxon_key = v.taxon_key;
         """)
 
         preview_query = "SELECT * FROM vernacular_name_mapped_occurrences LIMIT 10"
@@ -325,4 +325,3 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
-
