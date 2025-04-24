@@ -218,6 +218,44 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
+    
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="""
+        Create a new table \"geospatial_occurrences\" from \"pruned_occurrences\" converting all latitude
+        and longitude values to a single geospatial point
+    """,
+    deps=[pruned_occurrences]
+)
+def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            INSTALL spatial;
+            LOAD spatial;
+            
+            CREATE OR REPLACE TABLE geospatial_occurrences AS
+            SELECT
+                gbif_id,
+                taxon_key,
+                scientific_name,
+                coordinate_uncertainty_in_meters,
+                ST_Point(decimal_longitude, decimal_latitude) AS point
+            FROM pruned_occurrences;
+        """)
+
+        preview_query = "SELECT * FROM geospatial_occurrences LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
+        row_count = conn.execute("SELECT COUNT(*) FROM geospatial_occurrences").fetchone()
+        count = row_count[0] if row_count else 0
+
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
 
 @dg.asset(
     compute_kind="duckdb",
@@ -297,21 +335,21 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
     compute_kind="duckdb",
     group_name="ingestion",
     code_version="0.8.0",
-    description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"pruned_occurrences\" from \"vernacular_name_map\"",
-    deps=[vernacular_name_map, pruned_occurrences]
+    description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"geospatial_occurrences\" from \"vernacular_name_map\"",
+    deps=[vernacular_name_map, geospatial_occurrences]
 )
 def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE TABLE vernacular_name_mapped_occurrences AS
             SELECT 
-                p.*, 
+                g.*, 
                 v.vernacular_name_deu,
                 v.vernacular_name_eng,
                 v.vernacular_name_fra
-            FROM pruned_occurrences p
+            FROM geospatial_occurrences g
             LEFT JOIN vernacular_name_map v
-            ON p.taxon_key = v.taxon_key;
+            ON g.taxon_key = v.taxon_key;
         """)
 
         preview_query = "SELECT * FROM vernacular_name_mapped_occurrences LIMIT 10"
@@ -325,3 +363,36 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
                 "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
             }
         )
+
+@dg.asset(
+    compute_kind="duckdb",
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="Create a new table \"occurrences_by_taxon_key\" grouping all occurrences by taxon key",
+    deps=[unique_taxon_keys, geospatial_occurrences]
+)
+def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        conn.execute("""
+            INSTALL spatial;
+            LOAD spatial;
+            
+            CREATE OR REPLACE TABLE occurrences_by_taxon_key AS
+            SELECT
+                taxon_key,
+                ST_Collect(list(point)) AS points
+            FROM geospatial_occurrences
+            GROUP BY taxon_key;
+        """)
+
+        preview_query = "SELECT * FROM occurrences_by_taxon_key LIMIT 10"
+        preview_df = conn.execute(preview_query).fetchdf()
+        row_count = conn.execute("SELECT COUNT(*) FROM occurrences_by_taxon_key").fetchone()
+        count = row_count[0] if row_count else 0
+
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
