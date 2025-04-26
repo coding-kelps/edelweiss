@@ -1,7 +1,7 @@
 [[providers]]
 name = "doronic"
 type = "postgis"
-uri = "postgres://tegola:supersecret@postgres:5432/tegola"
+uri = "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 srid = 4326
 
     [[providers.layers]]
