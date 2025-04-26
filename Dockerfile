@@ -1,4 +1,4 @@
-FROM python:3.12.9-bookworm AS builder
+FROM python:3.12.10-bookworm AS builder
 
 RUN pip install poetry==2.0.1
 
@@ -15,7 +15,7 @@ RUN touch README.md
 
 RUN poetry install --no-root --no-cache --without dev
 
-FROM python:3.12.9-slim-bookworm AS runtime
+FROM python:3.12.10-slim-bookworm AS runtime
 
 ENV VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
