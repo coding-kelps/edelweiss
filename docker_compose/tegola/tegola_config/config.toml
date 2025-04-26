@@ -6,8 +6,8 @@ srid = 4326
 
     [[providers.layers]]
     name = "occurrences"
-    tablename = "gbif_by_taxon"
-    geometry_fieldname = "geom"
+    tablename = "species_occurrences"
+    geometry_fieldname = "occurrences"
     id_fieldname = "taxon_key"
 
 [[maps]]

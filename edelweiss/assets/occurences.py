@@ -4,6 +4,8 @@ from dagster import StaticPartitionsDefinition, AssetExecutionContext
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from edelweiss.resources.gbif import GBIFAPIResource
+from edelweiss.resources.postgresql import PostgreSQLResource
+import psycopg
 
 THREADPOOL_MAX_WORKER=10
 
@@ -13,7 +15,7 @@ gbif_downloads_yearly_partitions_def = StaticPartitionsDefinition([
 ])
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
     code_version="0.5.0",
@@ -57,7 +59,7 @@ def generated_gbif_download_keys(context: AssetExecutionContext, duckdb: DuckDBR
     )
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
     code_version="0.9.0",
@@ -162,7 +164,7 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
     )
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.6.0",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
@@ -220,7 +222,7 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
         )
     
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.1.0",
     description="""
@@ -258,7 +260,7 @@ def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResourc
     )
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.5.0",
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
@@ -284,7 +286,7 @@ def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) ->
         )
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.7.0",
     description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
@@ -332,7 +334,7 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
         )
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.8.0",
     description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"geospatial_occurrences\" from \"vernacular_name_map\"",
@@ -365,7 +367,7 @@ def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: D
         )
 
 @dg.asset(
-    compute_kind="duckdb",
+    kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.1.0",
     description="Create a new table \"occurrences_by_taxon_key\" grouping all occurrences by taxon key",
@@ -394,5 +396,52 @@ def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResou
         metadata={
             "row_count": dg.MetadataValue.int(count),
             "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
+
+@dg.asset(
+    kinds={"python", "duckdb", "postgresql"},
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="",
+    deps=[occurrences_by_taxon_key]
+)
+def species_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        result = conn.execute("""
+            INSTALL spatial;
+            LOAD spatial;
+
+            SELECT
+                taxon_key,
+                ST_AsWKB(points) AS wkb
+            FROM occurrences_by_taxon_key;
+        """).fetch_arrow_table()
+
+    data = [
+        (int(row["taxon_key"]), psycopg.Binary(row["wkb"]))
+        for row in result.to_pylist()
+    ]
+    
+    with postgresql.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS species_occurrences (
+                    taxon_key INTEGER PRIMARY KEY,
+                    occurrences geometry(MultiPoint, 4326)
+                );
+            """)
+
+            cur.executemany("""
+                INSERT INTO species_occurrences (taxon_key, occurrences)
+                VALUES (%s, ST_GeomFromWKB(%s))
+                ON CONFLICT (taxon_key) DO UPDATE
+                SET occurrences = EXCLUDED.occurrences;
+            """, data)
+        
+        conn.commit()
+
+    return dg.MaterializeResult(
+        metadata={
         }
     )
