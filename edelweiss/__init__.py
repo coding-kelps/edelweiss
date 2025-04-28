@@ -16,7 +16,8 @@ defs = dg.Definitions(
         vernacular_name_map,
         vernacular_name_mapped_occurrences,
         occurrences_by_taxon_key,
-        species_occurrence_geolocations,
+        species_all_occurrence,
+        species_names,
         occurrences,
     ],
     resources={

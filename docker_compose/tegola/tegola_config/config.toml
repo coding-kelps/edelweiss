@@ -8,9 +8,9 @@ srid = 4326
     name = "occurrences"
     sql  = """
       SELECT
-        taxon_key, ST_AsBinary(occurrences) AS geom
-      FROM species_occurrences
-      WHERE occurrences && !BBOX!
+        taxon_key, ST_AsBinary(all_occurrence_coordinates) AS geom
+      FROM species_all_occurrence
+      WHERE all_occurrence_coordinates && !BBOX!
       !SPECIES_TAXON_KEY!
     """
 

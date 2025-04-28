@@ -243,7 +243,7 @@ def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResourc
                 taxon_key,
                 scientific_name,
                 coordinate_uncertainty_in_meters,
-                ST_Point(decimal_longitude, decimal_latitude) AS point
+                ST_Point(decimal_longitude, decimal_latitude) AS coordinates
             FROM pruned_occurrences;
         """)
 
@@ -382,7 +382,7 @@ def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResou
             CREATE OR REPLACE TABLE occurrences_by_taxon_key AS
             SELECT
                 taxon_key,
-                ST_Collect(list(point)) AS points
+                ST_Collect(list(coordinates)) AS occurrence_coordinates
             FROM geospatial_occurrences
             GROUP BY taxon_key;
         """)
@@ -406,7 +406,7 @@ def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResou
     description="",
     deps=[occurrences_by_taxon_key]
 )
-def species_occurrence_geolocations(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
+def species_all_occurrence(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         result = conn.execute("""
             INSTALL spatial;
@@ -414,7 +414,7 @@ def species_occurrence_geolocations(context: AssetExecutionContext, duckdb: Duck
 
             SELECT
                 taxon_key,
-                ST_AsWKB(points) AS wkb
+                ST_AsWKB(occurrence_coordinates) AS wkb
             FROM occurrences_by_taxon_key;
         """).fetch_arrow_table()
 
@@ -426,23 +426,39 @@ def species_occurrence_geolocations(context: AssetExecutionContext, duckdb: Duck
     with postgresql.get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS species_occurrences (
+                CREATE TABLE IF NOT EXISTS species_all_occurrence (
                     taxon_key INTEGER PRIMARY KEY,
-                    occurrences geometry(MultiPoint, 4326)
+                    all_occurrence_coordinates geometry(MultiPoint, 4326)
                 );
             """)
 
             cur.executemany("""
-                INSERT INTO species_occurrences (taxon_key, occurrences)
-                VALUES (%s, ST_GeomFromWKB(%s))
+                INSERT INTO species_all_occurrence (
+                    taxon_key,
+                    all_occurrence_coordinates
+                )
+                VALUES (
+                    %s,
+                    ST_GeomFromWKB(%s)
+                )
                 ON CONFLICT (taxon_key) DO UPDATE
-                SET occurrences = EXCLUDED.occurrences;
+                SET
+                    all_occurrence_coordinates = EXCLUDED.all_occurrence_coordinates;
             """, data)
+
+            cur.execute("SELECT * FROM species_all_occurrence LIMIT 10;")
+            cols = [col.name for col in cur.description]
+            rows = cur.fetchall()
+            preview_df = pd.DataFrame(rows, columns=cols)
+            row_count = conn.execute("SELECT COUNT(*) FROM species_all_occurrence").fetchone()
+            count = row_count[0] if row_count else 0
         
         conn.commit()
 
     return dg.MaterializeResult(
         metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
         }
     )
 
@@ -451,7 +467,141 @@ def species_occurrence_geolocations(context: AssetExecutionContext, duckdb: Duck
     group_name="ingestion",
     code_version="0.1.0",
     description="",
-    deps=[occurrences_by_taxon_key]
+    deps=[vernacular_name_map]
+)
+def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
+    with duckdb.get_connection() as conn:
+        result = conn.execute("""
+            SELECT
+                taxon_key,
+                vernacular_name_deu,
+                vernacular_name_eng,
+                vernacular_name_fra,
+            FROM vernacular_name_map;
+        """).fetch_arrow_table()
+
+    data = [
+        (int(row["taxon_key"]), row["vernacular_name_deu"], row["vernacular_name_eng"], row["vernacular_name_fra"])
+        for row in result.to_pylist()
+    ]
+
+    with postgresql.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS species_names (
+                    taxon_key INTEGER PRIMARY KEY,
+                    vernacular_name_deu VARCHAR,
+                    vernacular_name_eng VARCHAR,
+                    vernacular_name_fra VARCHAR
+                );
+            """)
+
+            cur.executemany("""
+                INSERT INTO species_names (
+                    taxon_key,
+                    vernacular_name_deu,
+                    vernacular_name_eng,
+                    vernacular_name_fra
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                ON CONFLICT (taxon_key) DO UPDATE
+                SET
+                    vernacular_name_deu = EXCLUDED.vernacular_name_deu,
+                    vernacular_name_eng = EXCLUDED.vernacular_name_eng,
+                    vernacular_name_fra = EXCLUDED.vernacular_name_fra;
+            """, data)
+        
+            cur.execute("SELECT * FROM species_names LIMIT 10;")
+            cols = [col.name for col in cur.description]
+            rows = cur.fetchall()
+            preview_df = pd.DataFrame(rows, columns=cols)
+            row_count = conn.execute("SELECT COUNT(*) FROM species_names").fetchone()
+            count = row_count[0] if row_count else 0
+
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
+
+@dg.asset(
+    kinds={"python", "duckdb", "postgresql"},
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="",
+    deps=[geospatial_occurrences]
 )
 def occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
-    pass
+    with duckdb.get_connection() as conn:
+        result = conn.execute("""
+            INSTALL spatial;
+            LOAD spatial;
+
+            SELECT
+                gbif_id,
+                taxon_key,
+                coordinate_uncertainty_in_meters,
+                ST_AsWKB(coordinates) AS wkb
+            FROM geospatial_occurrences;
+        """).fetch_arrow_table()
+
+    data = [
+        (row["gbif_id"],
+         int(row["taxon_key"]),
+         float(row["coordinate_uncertainty_in_meters"]) if row["coordinate_uncertainty_in_meters"] else None,
+         psycopg.Binary(row["wkb"]))
+        for row in result.to_pylist()
+    ]
+
+    with postgresql.get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS occurrences (
+                gbif_id VARCHAR PRIMARY KEY,
+                taxon_key INTEGER,
+                coordinate_uncertainty_in_meters DOUBLE PRECISION,
+                coordinates geometry(Point, 4326)
+            );
+            """)
+
+            cur.executemany("""
+                INSERT INTO occurrences (
+                    gbif_id,
+                    taxon_key,
+                    coordinate_uncertainty_in_meters,
+                    coordinates
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    ST_GeomFromWKB(%s)
+                )
+                ON CONFLICT (gbif_id) DO UPDATE
+                SET
+                    taxon_key = EXCLUDED.taxon_key,
+                    coordinate_uncertainty_in_meters = EXCLUDED.coordinate_uncertainty_in_meters,
+                    coordinates = EXCLUDED.coordinates;
+            """, data)
+
+            cur.execute("SELECT * FROM occurrences LIMIT 10;")
+            cols = [col.name for col in cur.description]
+            rows = cur.fetchall()
+            preview_df = pd.DataFrame(rows, columns=cols)
+            row_count = conn.execute("SELECT COUNT(*) FROM occurrences").fetchone()
+            count = row_count[0] if row_count else 0
+        
+        conn.commit()
+
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )

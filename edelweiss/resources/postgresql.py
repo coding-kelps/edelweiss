@@ -28,5 +28,5 @@ class PostgreSQLResource(ConfigurableResource):
 
   def get_connection(self) -> psycopg.Connection:
     return psycopg.connect(
-      conninfo=f"postgresql://{self.username}:{self.password}@{self.host}:{self.port}/{self.db_name}"
+      conninfo=f"postgresql://{self.username}:{self.password}@{self.host}:{self.port}/{self.db_name}",
     )
