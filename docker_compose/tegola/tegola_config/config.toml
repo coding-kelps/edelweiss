@@ -6,9 +6,14 @@ srid = 4326
 
     [[providers.layers]]
     name = "occurrences"
-    tablename = "species_occurrences"
-    geometry_fieldname = "occurrences"
-    id_fieldname = "taxon_key"
+    sql  = """
+      SELECT
+        taxon_key, ST_AsBinary(occurrences) AS geom
+      FROM species_occurrences
+      WHERE occurrences && !BBOX!
+      !SPECIES_TAXON_KEY!
+    """
+
 
 [[maps]]
 name = "occurrences"
@@ -16,3 +21,9 @@ tile_buffer = 0
 
     [[maps.layers]]
     provider_layer = "doronic.occurrences"
+
+    [[maps.params]]
+    name            = "species_taxon_key"
+    token           = "!SPECIES_TAXON_KEY!"
+    type            = "string"
+    sql             = "AND taxon_key = ?"

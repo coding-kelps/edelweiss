@@ -29,6 +29,12 @@ services:
       - serve
       - --config
       - /opt/tegola_config/config.toml
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tegola}
+      POSTGRES_USER: ${POSTGRES_USER:-tegola}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supersecret}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
     restart: unless-stopped
     depends_on:
       postgres:
