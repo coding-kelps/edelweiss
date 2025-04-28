@@ -1,10 +1,11 @@
 from dagster import ConfigurableResource
 from typing import Any
-from pygbif import occurrences, species
+from pygbif import occurrences
 from pydantic import Field
 import time
 import requests
 import json
+import tempfile
 
 IN_PREPARATION_DOWNLOADS_LIMIT = 3
 
@@ -138,10 +139,13 @@ class GBIFAPIResource(ConfigurableResource):
     """
 
     while not self._check_download_availability(key=key):
-      time.sleep(self.download_availability_probe_period_min * 60)    
+      time.sleep(self.download_availability_probe_period_min * 60) 
+
+    tmp_dir = tempfile.TemporaryDirectory(prefix="edelweiss-", suffix=key, delete=False)
 
     res = occurrences.download_get(
         key=key,
+        path=tmp_dir.name
     )
 
     if res is None:
@@ -149,9 +153,9 @@ class GBIFAPIResource(ConfigurableResource):
 
     return res["path"]
 
-  def get_species_vernacular_names(self, taxonKey: str) -> dict[str, str]:
+  def get_species_vernacular_names(self, taxon_key: str) -> dict[str, str]:
     res = requests.get(
-      url=f"https://api.gbif.org/v1/species/{taxonKey}/vernacularNames",
+      url=f"https://api.gbif.org/v1/species/{taxon_key}/vernacularNames",
       headers={
           "accept": "application/json"
       },

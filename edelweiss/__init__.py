@@ -16,7 +16,8 @@ defs = dg.Definitions(
         vernacular_name_map,
         vernacular_name_mapped_occurrences,
         occurrences_by_taxon_key,
-        species_occurrences
+        species_occurrence_geolocations,
+        occurrences,
     ],
     resources={
         "duckdb": DuckDBResource(database="data/edelweiss.duckdb"),

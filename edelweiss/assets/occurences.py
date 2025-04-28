@@ -406,7 +406,7 @@ def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResou
     description="",
     deps=[occurrences_by_taxon_key]
 )
-def species_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
+def species_occurrence_geolocations(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         result = conn.execute("""
             INSTALL spatial;
@@ -445,3 +445,13 @@ def species_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, 
         metadata={
         }
     )
+
+@dg.asset(
+    kinds={"python", "duckdb", "postgresql"},
+    group_name="ingestion",
+    code_version="0.1.0",
+    description="",
+    deps=[occurrences_by_taxon_key]
+)
+def occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
+    pass
