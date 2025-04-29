@@ -293,7 +293,7 @@ def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) ->
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
 )
-def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
+def vernacular_names(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         unique_keys = conn.sql("SELECT taxon_key FROM unique_taxon_keys").fetchall()
         unique_keys = [key[0] for key in unique_keys]
@@ -309,7 +309,7 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
         data = [(key, names["deu"], names["eng"], names["fra"]) for key, names in vernacular_name_map.items()]
 
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS vernacular_name_map (
+            CREATE TABLE IF NOT EXISTS vernacular_names (
                 taxon_key INTEGER PRIMARY KEY,
                 vernacular_name_deu VARCHAR,
                 vernacular_name_eng VARCHAR,
@@ -317,79 +317,46 @@ def vernacular_name_map(context: AssetExecutionContext, gbif: GBIFAPIResource, d
             );
         """)
         conn.executemany("""
-            INSERT OR REPLACE INTO vernacular_name_map (taxon_key, vernacular_name_deu, vernacular_name_eng, vernacular_name_fra)
+            INSERT OR REPLACE INTO vernacular_names (taxon_key, vernacular_name_deu, vernacular_name_eng, vernacular_name_fra)
             VALUES (?, ?, ?, ?);
         """, data)
 
-        preview_query = "SELECT * FROM vernacular_name_map LIMIT 10"
+        preview_query = "SELECT * FROM vernacular_names LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_map").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_names").fetchone()
         count = row_count[0] if row_count else 0
 
-        return dg.MaterializeResult(
-            metadata={
-                "row_count": dg.MetadataValue.int(count),
-                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-            }
-        )
-
-@dg.asset(
-    kinds={"python", "duckdb"},
-    group_name="ingestion",
-    code_version="0.8.0",
-    description="Create a new table \"vernacular_name_mapped_occurrences\" mapping all vernacular name for each row of \"geospatial_occurrences\" from \"vernacular_name_map\"",
-    deps=[vernacular_name_map, geospatial_occurrences]
-)
-def vernacular_name_mapped_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
-    with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE OR REPLACE TABLE vernacular_name_mapped_occurrences AS
-            SELECT 
-                g.*, 
-                v.vernacular_name_deu,
-                v.vernacular_name_eng,
-                v.vernacular_name_fra
-            FROM geospatial_occurrences g
-            LEFT JOIN vernacular_name_map v
-            ON g.taxon_key = v.taxon_key;
-        """)
-
-        preview_query = "SELECT * FROM vernacular_name_mapped_occurrences LIMIT 10"
-        preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM vernacular_name_mapped_occurrences").fetchone()
-        count = row_count[0] if row_count else 0
-
-        return dg.MaterializeResult(
-            metadata={
-                "row_count": dg.MetadataValue.int(count),
-                "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
-            }
-        )
-
+    return dg.MaterializeResult(
+        metadata={
+            "row_count": dg.MetadataValue.int(count),
+            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
+        }
+    )
+    
 @dg.asset(
     kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.1.0",
-    description="Create a new table \"occurrences_by_taxon_key\" grouping all occurrences by taxon key",
-    deps=[unique_taxon_keys, geospatial_occurrences]
+    description="",
+    deps=[unique_taxon_keys]
 )
-def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
+def scientific_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
             INSTALL spatial;
             LOAD spatial;
             
-            CREATE OR REPLACE TABLE occurrences_by_taxon_key AS
-            SELECT
-                taxon_key,
-                ST_Collect(list(coordinates)) AS occurrence_coordinates
-            FROM geospatial_occurrences
-            GROUP BY taxon_key;
+            CREATE OR REPLACE TABLE scientific_names AS
+            SELECT DISTINCT
+                unique_taxon_keys.taxon_key,
+                raw_occurrences.scientific_name
+            FROM unique_taxon_keys
+            JOIN raw_occurrences USING (taxon_key);
         """)
 
-        preview_query = "SELECT * FROM occurrences_by_taxon_key LIMIT 10"
+        preview_query = "SELECT * FROM scientific_names LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM occurrences_by_taxon_key").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM scientific_names").fetchone()
         count = row_count[0] if row_count else 0
 
     return dg.MaterializeResult(
@@ -399,23 +366,25 @@ def occurrences_by_taxon_key(context: AssetExecutionContext, duckdb: DuckDBResou
         }
     )
 
+
 @dg.asset(
     kinds={"python", "duckdb", "postgresql"},
     group_name="ingestion",
     code_version="0.1.0",
     description="",
-    deps=[occurrences_by_taxon_key]
+    deps=[geospatial_occurrences]
 )
 def species_all_occurrence(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         result = conn.execute("""
             INSTALL spatial;
             LOAD spatial;
-
+                              
             SELECT
                 taxon_key,
-                ST_AsWKB(occurrence_coordinates) AS wkb
-            FROM occurrences_by_taxon_key;
+                ST_AsWKB(ST_Collect(list(coordinates))) AS wkb
+            FROM geospatial_occurrences
+            GROUP BY taxon_key;
         """).fetch_arrow_table()
 
     data = [
@@ -467,21 +436,23 @@ def species_all_occurrence(context: AssetExecutionContext, duckdb: DuckDBResourc
     group_name="ingestion",
     code_version="0.1.0",
     description="",
-    deps=[vernacular_name_map]
+    deps=[vernacular_names, scientific_names]
 )
 def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         result = conn.execute("""
             SELECT
-                taxon_key,
-                vernacular_name_deu,
-                vernacular_name_eng,
-                vernacular_name_fra,
-            FROM vernacular_name_map;
+                scientific_names.taxon_key,
+                scientific_names.scientific_name,
+                vernacular_names.vernacular_name_deu,
+                vernacular_names.vernacular_name_eng,
+                vernacular_names.vernacular_name_fra
+            FROM scientific_names
+            JOIN vernacular_names USING (taxon_key);
         """).fetch_arrow_table()
 
     data = [
-        (int(row["taxon_key"]), row["vernacular_name_deu"], row["vernacular_name_eng"], row["vernacular_name_fra"])
+        (int(row["taxon_key"]), row["scientific_name"], row["vernacular_name_deu"], row["vernacular_name_eng"], row["vernacular_name_fra"])
         for row in result.to_pylist()
     ]
 
@@ -490,6 +461,7 @@ def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgr
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS species_names (
                     taxon_key INTEGER PRIMARY KEY,
+                    scientific_name VARCHAR,
                     vernacular_name_deu VARCHAR,
                     vernacular_name_eng VARCHAR,
                     vernacular_name_fra VARCHAR
@@ -499,6 +471,7 @@ def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgr
             cur.executemany("""
                 INSERT INTO species_names (
                     taxon_key,
+                    scientific_name,
                     vernacular_name_deu,
                     vernacular_name_eng,
                     vernacular_name_fra
@@ -507,10 +480,12 @@ def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgr
                     %s,
                     %s,
                     %s,
+                    %s,
                     %s
                 )
                 ON CONFLICT (taxon_key) DO UPDATE
                 SET
+                    scientific_name = EXCLUDED.scientific_name,
                     vernacular_name_deu = EXCLUDED.vernacular_name_deu,
                     vernacular_name_eng = EXCLUDED.vernacular_name_eng,
                     vernacular_name_fra = EXCLUDED.vernacular_name_fra;
