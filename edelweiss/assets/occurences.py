@@ -62,7 +62,7 @@ def generated_gbif_download_keys(context: AssetExecutionContext, duckdb: DuckDBR
     kinds={"python", "duckdb"},
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
-    code_version="0.9.0",
+    code_version="0.10.0",
     description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
     tags = {"gbif": ""},
     deps=[generated_gbif_download_keys]
@@ -124,7 +124,7 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
                     elevation DOUBLE,
                     elevation_accuracy DOUBLE,
                     depth DOUBLE,
-                    depth_accuracy VARCHAR,
+                    depth_accuracy DOUBLE,
                     event_date VARCHAR,
                     day BIGINT,
                     month BIGINT,
@@ -166,7 +166,7 @@ def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckd
 @dg.asset(
     kinds={"python", "duckdb"},
     group_name="ingestion",
-    code_version="0.6.0",
+    code_version="0.7.0",
     description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
     deps=[raw_occurrences]
 )
@@ -176,7 +176,6 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
             CREATE TABLE IF NOT EXISTS pruned_occurrences (
                 gbif_id VARCHAR PRIMARY KEY,
                 taxon_key BIGINT,
-                scientific_name VARCHAR,
                 decimal_latitude DOUBLE,
                 decimal_longitude DOUBLE,
                 coordinate_uncertainty_in_meters DOUBLE,
@@ -184,29 +183,43 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
                 elevation DOUBLE,
                 elevation_accuracy DOUBLE,
                 depth DOUBLE,
-                depth_accuracy VARCHAR,
-                day BIGINT,
-                month BIGINT,
-                year BIGINT
+                depth_accuracy DOUBLE,
+                date DATE
             );
         """)
         conn.execute("""
             INSERT INTO pruned_occurrences (
                 gbif_id,
                 taxon_key,
-                scientific_name,
-                coordinate_uncertainty_in_meters,
                 decimal_latitude,
-                decimal_longitude
+                decimal_longitude,
+                coordinate_uncertainty_in_meters,
+                coordinate_precision,
+                elevation,
+                elevation_accuracy,
+                depth,
+                depth_accuracy,
+                "date"
             )
             SELECT
                 gbif_id,
                 taxon_key,
-                scientific_name,
-                coordinate_uncertainty_in_meters,
                 decimal_latitude,
-                decimal_longitude
-            FROM raw_occurrences;
+                decimal_longitude,
+                coordinate_uncertainty_in_meters,
+                coordinate_precision,
+                elevation,
+                elevation_accuracy,
+                depth,
+                depth_accuracy,
+                MAKE_DATE("year", "month", "day")
+            FROM raw_occurrences
+            WHERE
+                species IS NOT NULL
+                AND (
+                  "class" = 'Mammalia'
+                  OR "class" = 'Aves'
+                );
         """)
 
         preview_query = "SELECT * FROM pruned_occurrences LIMIT 10"
@@ -224,7 +237,7 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
 @dg.asset(
     kinds={"python", "duckdb"},
     group_name="ingestion",
-    code_version="0.1.0",
+    code_version="0.2.0",
     description="""
         Create a new table \"geospatial_occurrences\" from \"pruned_occurrences\" converting all latitude
         and longitude values to a single geospatial point
@@ -241,9 +254,14 @@ def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResourc
             SELECT
                 gbif_id,
                 taxon_key,
-                scientific_name,
+                ST_Point(decimal_longitude, decimal_latitude) AS coordinates,
                 coordinate_uncertainty_in_meters,
-                ST_Point(decimal_longitude, decimal_latitude) AS coordinates
+                coordinate_precision,
+                elevation,
+                elevation_accuracy,
+                depth,
+                depth_accuracy,
+                date
             FROM pruned_occurrences;
         """)
 
@@ -262,15 +280,15 @@ def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResourc
 @dg.asset(
     kinds={"python", "duckdb"},
     group_name="ingestion",
-    code_version="0.5.0",
+    code_version="0.6.0",
     description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
-    deps=[raw_occurrences]
+    deps=[pruned_occurrences]
 )
 def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
         conn.execute("""
             CREATE OR REPLACE TABLE unique_taxon_keys AS
-            SELECT DISTINCT taxon_key FROM raw_occurrences;
+            SELECT DISTINCT taxon_key FROM pruned_occurrences;
         """)
 
         preview_query = "SELECT * FROM unique_taxon_keys LIMIT 10"
@@ -508,7 +526,7 @@ def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgr
 @dg.asset(
     kinds={"python", "duckdb", "postgresql"},
     group_name="ingestion",
-    code_version="0.1.0",
+    code_version="0.2.0",
     description="",
     deps=[geospatial_occurrences]
 )
@@ -521,48 +539,86 @@ def occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgres
             SELECT
                 gbif_id,
                 taxon_key,
+                ST_AsWKB(coordinates) AS wkb,
                 coordinate_uncertainty_in_meters,
-                ST_AsWKB(coordinates) AS wkb
+                coordinate_precision,
+                elevation,
+                elevation_accuracy,
+                depth,
+                depth_accuracy,
+                date
             FROM geospatial_occurrences;
         """).fetch_arrow_table()
 
     data = [
-        (row["gbif_id"],
-         int(row["taxon_key"]),
-         float(row["coordinate_uncertainty_in_meters"]) if row["coordinate_uncertainty_in_meters"] else None,
-         psycopg.Binary(row["wkb"]))
+        (
+            row["gbif_id"],
+            int(row["taxon_key"]),
+            psycopg.Binary(row["wkb"]),
+            float(row["coordinate_uncertainty_in_meters"]) if row["coordinate_uncertainty_in_meters"] else None,
+            float(row["coordinate_precision"]) if row["coordinate_precision"] else None,
+            float(row["elevation"]) if row["elevation"] else None,
+            float(row["elevation_accuracy"]) if row["elevation_accuracy"] else None,
+            float(row["depth"]) if row["depth"] else None,
+            float(row["depth_accuracy"]) if row["depth_accuracy"] else None,
+            row["date"]
+        )
         for row in result.to_pylist()
     ]
 
     with postgresql.get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-            CREATE TABLE IF NOT EXISTS occurrences (
-                gbif_id VARCHAR PRIMARY KEY,
-                taxon_key INTEGER,
-                coordinate_uncertainty_in_meters DOUBLE PRECISION,
-                coordinates geometry(Point, 4326)
-            );
+                CREATE TABLE IF NOT EXISTS occurrences (
+                    gbif_id VARCHAR PRIMARY KEY,
+                    taxon_key INTEGER,
+                    coordinates geometry(Point, 4326),
+                    coordinate_uncertainty_in_meters DOUBLE PRECISION,
+                    coordinate_precision DOUBLE PRECISION,
+                    elevation DOUBLE PRECISION,
+                    elevation_accuracy DOUBLE PRECISION,
+                    depth DOUBLE PRECISION,
+                    depth_accuracy DOUBLE PRECISION,
+                    "date" date
+                );
             """)
 
             cur.executemany("""
                 INSERT INTO occurrences (
                     gbif_id,
                     taxon_key,
+                    coordinates,
                     coordinate_uncertainty_in_meters,
-                    coordinates
+                    coordinate_precision,
+                    elevation,
+                    elevation_accuracy,
+                    depth,
+                    depth_accuracy,
+                    "date"
                 )
                 VALUES (
                     %s,
                     %s,
+                    ST_GeomFromWKB(%s),
                     %s,
-                    ST_GeomFromWKB(%s)
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
                 )
                 ON CONFLICT (gbif_id) DO UPDATE
                 SET
                     taxon_key = EXCLUDED.taxon_key,
+                    coordinates = EXCLUDED.coordinates,
                     coordinate_uncertainty_in_meters = EXCLUDED.coordinate_uncertainty_in_meters,
-                    coordinates = EXCLUDED.coordinates;
+                    coordinate_precision = EXCLUDED.coordinate_precision,
+                    elevation = EXCLUDED.elevation,
+                    elevation_accuracy = EXCLUDED.elevation_accuracy,
+                    depth = EXCLUDED.depth,
+                    depth_accuracy = EXCLUDED.depth_accuracy,
+                    "date" = EXCLUDED."date";
             """, data)
 
             cur.execute("SELECT * FROM occurrences LIMIT 10;")
