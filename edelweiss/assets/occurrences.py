@@ -6,8 +6,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from edelweiss.resources.gbif import GBIFAPIResource
 from edelweiss.resources.postgresql import PostgreSQLResource
 import psycopg
+from edelweiss.constants import OUTPUT_DIR
+import zipfile
+import tempfile
+import os
 
 THREADPOOL_MAX_WORKER=10
+PARTITIONED_RAW_OCCURRENCES_DIR=f"{OUTPUT_DIR}/partioned-raw-occurrences"
 
 gbif_downloads_yearly_partitions_def = StaticPartitionsDefinition([
     "2015", "2016", "2017", "2018", "2019", "2020",
@@ -18,11 +23,13 @@ gbif_downloads_yearly_partitions_def = StaticPartitionsDefinition([
     kinds={"python", "duckdb"},
     partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
-    code_version="0.5.0",
-    description="",
-    tags = {"gbif": ""}
+    code_version="0.1.0",
+    description="""
+        Download raw observation occurences of animal species in the French Alps from the GBIF API.
+    """,
+    tags = {"gbif": ""},
 )
-def generated_gbif_download_keys(context: AssetExecutionContext, duckdb: DuckDBResource, gbif: GBIFAPIResource) -> dg.MaterializeResult:
+def partitioned_raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     year = context.partition_key
     queries = {
         "country": "FR",
@@ -33,133 +40,121 @@ def generated_gbif_download_keys(context: AssetExecutionContext, duckdb: DuckDBR
     
     key = gbif.request_download(queries=queries)
 
+    downloaded_archive_path = gbif.get_download(key=key)
+    context.log.info(f"downloaded GBIF archive at {downloaded_archive_path}")
+
+    with zipfile.ZipFile(downloaded_archive_path, 'r') as z:
+        member_name = z.namelist()[0]
+
+        with z.open(member_name) as src, tempfile.NamedTemporaryFile(delete=False, suffix=f"-raw-occurrences-{key}.csv", dir=OUTPUT_DIR) as tmp:
+            tmp.write(src.read())
+            tmp_path = tmp.name
+
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS generated_gbif_download_keys (
-                year INTEGER PRIMARY KEY,
-                key VARCHAR
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS yearly_raw_occurrences (
+                gbif_id VARCHAR PRIMARY KEY,
+                dataset_key VARCHAR,
+                occurrence_id VARCHAR,
+                kingdom VARCHAR,
+                phylum VARCHAR,
+                "class" VARCHAR,
+                "order" VARCHAR,
+                family VARCHAR,
+                genus VARCHAR,
+                species VARCHAR,
+                infraspecific_epithet VARCHAR,
+                taxon_rank VARCHAR,
+                scientific_name VARCHAR,
+                verbatim_scientific_name VARCHAR,
+                verbatim_scientific_name_authorship VARCHAR,
+                country_code VARCHAR,
+                locality VARCHAR,
+                state_province VARCHAR,
+                occurrence_status VARCHAR,
+                individual_count DOUBLE,
+                publishing_org_key VARCHAR,
+                decimal_latitude DOUBLE,
+                decimal_longitude DOUBLE,
+                coordinate_uncertainty_in_meters DOUBLE,
+                coordinate_precision DOUBLE,
+                elevation DOUBLE,
+                elevation_accuracy DOUBLE,
+                depth DOUBLE,
+                depth_accuracy DOUBLE,
+                event_date VARCHAR,
+                day BIGINT,
+                month BIGINT,
+                year BIGINT,
+                taxon_key BIGINT,
+                species_key DOUBLE,
+                basis_of_record VARCHAR,
+                institution_code VARCHAR,
+                collection_code VARCHAR,
+                catalog_number VARCHAR,
+                record_number VARCHAR,
+                identified_by VARCHAR,
+                date_identified VARCHAR,
+                license VARCHAR,
+                rights_holder VARCHAR,
+                recorded_by VARCHAR,
+                type_status VARCHAR,
+                establishment_means VARCHAR,
+                last_interpreted VARCHAR,
+                media_type VARCHAR,
+                issue VARCHAR
             );
         """)
 
-        conn.execute("""
-            INSERT OR REPLACE INTO generated_gbif_download_keys (year, key)
-            VALUES (?, ?);
-        """, (year, key))
+        os.makedirs(PARTITIONED_RAW_OCCURRENCES_DIR, exist_ok=True)
 
-        preview_query = "SELECT * FROM generated_gbif_download_keys LIMIT 10"
-        preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM generated_gbif_download_keys").fetchone()
+        conn.execute(f"""
+            COPY yearly_raw_occurrences
+            FROM '{tmp_path}' (DELIMITER '\t', HEADER TRUE, AUTO_DETECT FALSE)
+        """)
+
+        conn.execute(f"""
+            COPY yearly_raw_occurrences
+            TO '{PARTITIONED_RAW_OCCURRENCES_DIR}/{key}.parquet' (FORMAT PARQUET)
+        """)
+
+        row_count = conn.execute("SELECT COUNT(*) FROM yearly_raw_occurrences").fetchone()
         count = row_count[0] if row_count else 0
-
+    
     return dg.MaterializeResult(
         metadata={
             "row_count": dg.MetadataValue.int(count),
-            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
         }
     )
 
 @dg.asset(
     kinds={"python", "duckdb"},
-    partitions_def=gbif_downloads_yearly_partitions_def,
     group_name="ingestion",
-    code_version="0.10.0",
-    description="Download raw observation occurences of animal species in the French Alps from a GBIF donwload key",
-    tags = {"gbif": ""},
-    deps=[generated_gbif_download_keys]
+    code_version="0.11.0",
+    description="""
+        Combine all yearly raw occurrences into one dataset.
+    """,
+    tags = {},
+    deps=[partitioned_raw_occurrences]
 )
-def raw_occurrences(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
-    year = context.partition_key
-
+def raw_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        row = conn.execute(
-            "SELECT key FROM generated_gbif_download_keys WHERE year = ?",
-            (year,)
-        ).fetchone()
+        conn.execute(f"""
+            CREATE TABLE raw_occurrences AS
+            SELECT * FROM read_parquet('{PARTITIONED_RAW_OCCURRENCES_DIR}/*')
+        """)
 
-        if row is None:
-            raise ValueError(f"No download key found for year {year}")
+        conn.execute(f"""
+            COPY raw_occurrences
+            TO '{OUTPUT_DIR}/raw-occurrences.parquet' (FORMAT PARQUET);
+        """)
 
-        key = row[0]
-
-    downloaded_archive_path = gbif.get_download(key=key)
-    df = pd.read_csv(downloaded_archive_path, sep='\t')
-
-    with duckdb.get_connection() as conn:
-        conn.register("df_view", df)
-
-        table_exists = conn.execute("""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_name = 'raw_occurrences'
-        """).fetchone()[0]
-        
-        if table_exists == 0:
-            # https://techdocs.gbif.org/en/data-use/download-formats
-            conn.execute(f"""
-                CREATE TABLE IF NOT EXISTS raw_occurrences (
-                    gbif_id VARCHAR PRIMARY KEY,
-                    dataset_key VARCHAR,
-                    occurrence_id VARCHAR,
-                    kingdom VARCHAR,
-                    phylum VARCHAR,
-                    "class" VARCHAR,
-                    "order" VARCHAR,
-                    family VARCHAR,
-                    genus VARCHAR,
-                    species VARCHAR,
-                    infraspecific_epithet VARCHAR,
-                    taxon_rank VARCHAR,
-                    scientific_name VARCHAR,
-                    verbatim_scientific_name VARCHAR,
-                    verbatim_scientific_name_authorship VARCHAR,
-                    country_code VARCHAR,
-                    locality VARCHAR,
-                    state_province VARCHAR,
-                    occurrence_status VARCHAR,
-                    individual_count DOUBLE,
-                    publishing_org_key VARCHAR,
-                    decimal_latitude DOUBLE,
-                    decimal_longitude DOUBLE,
-                    coordinate_uncertainty_in_meters DOUBLE,
-                    coordinate_precision DOUBLE,
-                    elevation DOUBLE,
-                    elevation_accuracy DOUBLE,
-                    depth DOUBLE,
-                    depth_accuracy DOUBLE,
-                    event_date VARCHAR,
-                    day BIGINT,
-                    month BIGINT,
-                    year BIGINT,
-                    taxon_key BIGINT,
-                    species_key DOUBLE,
-                    basis_of_record VARCHAR,
-                    institution_code VARCHAR,
-                    collection_code VARCHAR,
-                    catalog_number VARCHAR,
-                    record_number VARCHAR,
-                    identified_by VARCHAR,
-                    date_identified VARCHAR,
-                    license VARCHAR,
-                    rights_holder VARCHAR,
-                    recorded_by VARCHAR,
-                    type_status VARCHAR,
-                    establishment_means VARCHAR,
-                    last_interpreted VARCHAR,
-                    media_type VARCHAR,
-                    issue VARCHAR
-                );
-            """)
-        else:
-            conn.execute("INSERT INTO raw_occurrences SELECT * FROM df_view")
-
-        preview_query = "SELECT * FROM raw_occurrences LIMIT 10"
-        preview_df = conn.execute(preview_query).fetchdf()
         row_count = conn.execute("SELECT COUNT(*) FROM raw_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
     return dg.MaterializeResult(
         metadata={
             "row_count": dg.MetadataValue.int(count),
-            "preview": dg.MetadataValue.md(preview_df.to_markdown(index=False)),
         }
     )
 
@@ -213,7 +208,7 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
                 depth,
                 depth_accuracy,
                 MAKE_DATE("year", "month", "day")
-            FROM raw_occurrences
+            FROM '
             WHERE
                 species IS NOT NULL
                 AND (

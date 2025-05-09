@@ -27,6 +27,7 @@ class GBIFAPIResource(ConfigurableResource):
     default=2,
     description="The duration between checks for GBIF donwload availability in minutes"
   )
+  dir: str = Field(description="The directory in which donwloaded archives will be stored.")
 
   def _get_account_downloads(self) -> list[dict[str, Any]]:
     res = occurrences.download_list(user=self.username, pwd=self.password)
@@ -141,7 +142,7 @@ class GBIFAPIResource(ConfigurableResource):
     while not self._check_download_availability(key=key):
       time.sleep(self.download_availability_probe_period_min * 60) 
 
-    tmp_dir = tempfile.TemporaryDirectory(prefix="edelweiss-", suffix=key, delete=False)
+    tmp_dir = tempfile.TemporaryDirectory(suffix=key, dir=self.dir, delete=False)
 
     res = occurrences.download_get(
         key=key,
