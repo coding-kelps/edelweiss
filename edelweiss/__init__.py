@@ -1,1 +1,1 @@
-from edelweiss.repository import defs
+from edelweiss.definitions import defs
