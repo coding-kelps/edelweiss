@@ -161,65 +161,44 @@ def raw_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> d
 @dg.asset(
     kinds={"python", "duckdb"},
     group_name="ingestion",
-    code_version="0.7.0",
-    description="Create a new table \"pruned_occurrences\" with only revelant columns for the edelweiss preprocessing pipeline from \"raw_occurrences\"",
+    code_version="0.1.0",
+    description="""
+    """,
     deps=[raw_occurrences]
 )
-def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
+def filtered_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pruned_occurrences (
-                gbif_id VARCHAR PRIMARY KEY,
-                taxon_key BIGINT,
-                decimal_latitude DOUBLE,
-                decimal_longitude DOUBLE,
-                coordinate_uncertainty_in_meters DOUBLE,
-                coordinate_precision DOUBLE,
-                elevation DOUBLE,
-                elevation_accuracy DOUBLE,
-                depth DOUBLE,
-                depth_accuracy DOUBLE,
-                date DATE
-            );
-        """)
-        conn.execute("""
-            INSERT INTO pruned_occurrences (
-                gbif_id,
-                taxon_key,
-                decimal_latitude,
-                decimal_longitude,
-                coordinate_uncertainty_in_meters,
-                coordinate_precision,
-                elevation,
-                elevation_accuracy,
-                depth,
-                depth_accuracy,
-                "date"
-            )
-            SELECT
-                gbif_id,
-                taxon_key,
-                decimal_latitude,
-                decimal_longitude,
-                coordinate_uncertainty_in_meters,
-                coordinate_precision,
-                elevation,
-                elevation_accuracy,
-                depth,
-                depth_accuracy,
-                MAKE_DATE("year", "month", "day")
-            FROM '
-            WHERE
-                species IS NOT NULL
-                AND (
-                  "class" = 'Mammalia'
-                  OR "class" = 'Aves'
-                );
+        conn.execute(f"""
+            CREATE TABLE filtered_occurrences AS
+                SELECT
+                    gbif_id,
+                    taxon_key,
+                    decimal_latitude,
+                    decimal_longitude,
+                    coordinate_uncertainty_in_meters,
+                    coordinate_precision,
+                    elevation,
+                    elevation_accuracy,
+                    depth,
+                    depth_accuracy,
+                    MAKE_DATE("year", "month", "day") as "date"
+                FROM read_parquet('{OUTPUT_DIR}/raw-occurrences.parquet')
+                WHERE
+                    species IS NOT NULL
+                    AND (
+                      "class" = 'Mammalia'
+                      OR "class" = 'Aves'
+                    );
         """)
 
-        preview_query = "SELECT * FROM pruned_occurrences LIMIT 10"
+        conn.execute(f"""
+            COPY filtered_occurrences
+            TO '{OUTPUT_DIR}/filtered-occurrences.parquet' (FORMAT PARQUET);
+        """)
+
+        preview_query = "SELECT * FROM filtered_occurrences LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
-        row_count = conn.execute("SELECT COUNT(*) FROM pruned_occurrences").fetchone()
+        row_count = conn.execute("SELECT COUNT(*) FROM filtered_occurrences").fetchone()
         count = row_count[0] if row_count else 0
 
         return dg.MaterializeResult(
@@ -234,18 +213,16 @@ def pruned_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -
     group_name="ingestion",
     code_version="0.2.0",
     description="""
-        Create a new table \"geospatial_occurrences\" from \"pruned_occurrences\" converting all latitude
-        and longitude values to a single geospatial point
     """,
-    deps=[pruned_occurrences]
+    deps=[filtered_occurrences]
 )
 def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        conn.execute("""
+        conn.execute(f"""
             INSTALL spatial;
             LOAD spatial;
             
-            CREATE OR REPLACE TABLE geospatial_occurrences AS
+            CREATE TABLE geospatial_occurrences AS
             SELECT
                 gbif_id,
                 taxon_key,
@@ -257,7 +234,12 @@ def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResourc
                 depth,
                 depth_accuracy,
                 date
-            FROM pruned_occurrences;
+            FROM read_parquet('{OUTPUT_DIR}/filtered-occurrences.parquet');
+        """)
+
+        conn.execute(f"""
+            COPY geospatial_occurrences
+            TO '{OUTPUT_DIR}/geospatial-occurrences.parquet' (FORMAT PARQUET);
         """)
 
         preview_query = "SELECT * FROM geospatial_occurrences LIMIT 10"
@@ -276,14 +258,22 @@ def geospatial_occurrences(context: AssetExecutionContext, duckdb: DuckDBResourc
     kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.6.0",
-    description="Create a new table \"unique_taxon_keys\" listing all unique GBIF taxon key from \"raw_occurrences\"",
-    deps=[pruned_occurrences]
+    description="""
+    """,
+    deps=[filtered_occurrences]
 )
 def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            CREATE OR REPLACE TABLE unique_taxon_keys AS
-            SELECT DISTINCT taxon_key FROM pruned_occurrences;
+        conn.execute(f"""
+            CREATE TABLE unique_taxon_keys AS
+                SELECT DISTINCT
+                    taxon_key
+                FROM read_parquet('{OUTPUT_DIR}/filtered-occurrences.parquet');
+        """)
+
+        conn.execute(f"""
+            COPY unique_taxon_keys
+            TO '{OUTPUT_DIR}/unique-taxon-keys.parquet' (FORMAT PARQUET);
         """)
 
         preview_query = "SELECT * FROM unique_taxon_keys LIMIT 10"
@@ -302,13 +292,17 @@ def unique_taxon_keys(context: AssetExecutionContext, duckdb: DuckDBResource) ->
     kinds={"python", "duckdb"},
     group_name="ingestion",
     code_version="0.7.0",
-    description="Create a new table \"vernacular_name_map\" mapping all vernacular name for all taxon key of \"unique_taxon_keys\"",
+    description="""
+    """,
     tags = {"gbif": ""},
     deps=[unique_taxon_keys]
 )
 def vernacular_names(context: AssetExecutionContext, gbif: GBIFAPIResource, duckdb: DuckDBResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        unique_keys = conn.sql("SELECT taxon_key FROM unique_taxon_keys").fetchall()
+        unique_keys = conn.execute(f"""
+            SELECT taxon_key
+            FROM read_parquet('{OUTPUT_DIR}/unique-taxon-keys.parquet');
+        """).fetchall()
         unique_keys = [key[0] for key in unique_keys]
 
         vernacular_name_map = {}
@@ -322,17 +316,22 @@ def vernacular_names(context: AssetExecutionContext, gbif: GBIFAPIResource, duck
         data = [(key, names["deu"], names["eng"], names["fra"]) for key, names in vernacular_name_map.items()]
 
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS vernacular_names (
+            CREATE TABLE vernacular_names (
                 taxon_key INTEGER PRIMARY KEY,
                 vernacular_name_deu VARCHAR,
                 vernacular_name_eng VARCHAR,
-                vernacular_name_fra VARCHAR,
+                vernacular_name_fra VARCHAR
             );
         """)
         conn.executemany("""
-            INSERT OR REPLACE INTO vernacular_names (taxon_key, vernacular_name_deu, vernacular_name_eng, vernacular_name_fra)
+            INSERT INTO vernacular_names (taxon_key, vernacular_name_deu, vernacular_name_eng, vernacular_name_fra)
             VALUES (?, ?, ?, ?);
         """, data)
+
+        conn.execute(f"""
+            COPY vernacular_names
+            TO '{OUTPUT_DIR}/vernacular-names.parquet' (FORMAT PARQUET);
+        """)
 
         preview_query = "SELECT * FROM vernacular_names LIMIT 10"
         preview_df = conn.execute(preview_query).fetchdf()
@@ -355,16 +354,18 @@ def vernacular_names(context: AssetExecutionContext, gbif: GBIFAPIResource, duck
 )
 def scientific_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        conn.execute("""
-            INSTALL spatial;
-            LOAD spatial;
-            
-            CREATE OR REPLACE TABLE scientific_names AS
+        conn.execute(f"""
+            CREATE TABLE scientific_names AS
             SELECT DISTINCT
                 unique_taxon_keys.taxon_key,
                 raw_occurrences.scientific_name
-            FROM unique_taxon_keys
-            JOIN raw_occurrences USING (taxon_key);
+            FROM read_parquet('{OUTPUT_DIR}/unique-taxon-keys.parquet') AS 'unique_taxon_keys'
+            JOIN read_parquet('{OUTPUT_DIR}/raw-occurrences.parquet') AS 'raw_occurrences' USING (taxon_key);
+        """)
+
+        conn.execute(f"""
+            COPY scientific_names
+            TO '{OUTPUT_DIR}/scientific-names.parquet' (FORMAT PARQUET);
         """)
 
         preview_query = "SELECT * FROM scientific_names LIMIT 10"
@@ -389,14 +390,14 @@ def scientific_names(context: AssetExecutionContext, duckdb: DuckDBResource, pos
 )
 def species_all_occurrence(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        result = conn.execute("""
+        result = conn.execute(f"""
             INSTALL spatial;
             LOAD spatial;
                               
             SELECT
                 taxon_key,
                 ST_AsWKB(ST_Collect(list(coordinates))) AS wkb
-            FROM geospatial_occurrences
+            FROM read_parquet('{OUTPUT_DIR}/geospatial-occurrences.parquet')
             GROUP BY taxon_key;
         """).fetch_arrow_table()
 
@@ -453,15 +454,15 @@ def species_all_occurrence(context: AssetExecutionContext, duckdb: DuckDBResourc
 )
 def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        result = conn.execute("""
+        result = conn.execute(f"""
             SELECT
                 scientific_names.taxon_key,
                 scientific_names.scientific_name,
                 vernacular_names.vernacular_name_deu,
                 vernacular_names.vernacular_name_eng,
                 vernacular_names.vernacular_name_fra
-            FROM scientific_names
-            JOIN vernacular_names USING (taxon_key);
+            FROM read_parquet('{OUTPUT_DIR}/scientific-names.parquet') AS 'scientific_names'
+            JOIN read_parquet('{OUTPUT_DIR}/vernacular-names.parquet') AS 'vernacular_names' USING (taxon_key);
         """).fetch_arrow_table()
 
     data = [
@@ -527,7 +528,7 @@ def species_names(context: AssetExecutionContext, duckdb: DuckDBResource, postgr
 )
 def occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgresql: PostgreSQLResource) -> dg.MaterializeResult:
     with duckdb.get_connection() as conn:
-        result = conn.execute("""
+        result = conn.execute(f"""
             INSTALL spatial;
             LOAD spatial;
 
@@ -542,7 +543,7 @@ def occurrences(context: AssetExecutionContext, duckdb: DuckDBResource, postgres
                 depth,
                 depth_accuracy,
                 date
-            FROM geospatial_occurrences;
+            FROM read_parquet('{OUTPUT_DIR}/geospatial-occurrences.parquet');
         """).fetch_arrow_table()
 
     data = [

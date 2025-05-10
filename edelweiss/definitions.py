@@ -17,7 +17,7 @@ defs = dg.Definitions(
     assets=[
         partitioned_raw_occurrences,
         raw_occurrences,
-        pruned_occurrences,
+        filtered_occurrences,
         geospatial_occurrences,
         unique_taxon_keys,
         vernacular_names,
