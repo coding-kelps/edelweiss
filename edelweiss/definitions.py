@@ -2,11 +2,9 @@ from dagster_duckdb import DuckDBResource
 import dagster as dg
 from dagster import EnvVar
 
-from edelweiss.assets.occurrences import *
-from edelweiss.resources.gbif import GBIFAPIResource
-from edelweiss.resources.postgresql import PostgreSQLResource
-
-from edelweiss.constants import OUTPUT_DIR
+from edelweiss.assets import *
+from edelweiss.resources import *
+from edelweiss.constants import *
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
