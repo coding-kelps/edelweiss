@@ -2,18 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.0.1] - 2025-05-27
+## [0.10.0] - 2025-06-13
 
 ### ⛰️  Features
 
-- *(assets)* Add date to occurrences - ([d0fe8ee](https://github.com/coding-kelps/edelweiss/commit/d0fe8ee8e66e97114160b652da891e50e38a96a5))
-- *(assets)* Add species scientific name to operational database - ([911430a](https://github.com/coding-kelps/edelweiss/commit/911430aece48f9d7fb6dc90e3abaad8d02e526ae))
-- *(assets)* Add two new assets species_names and occurrences to load more information to operational database - ([658b78b](https://github.com/coding-kelps/edelweiss/commit/658b78b33171092245d67609cef4aed0df45adfb))
-- *(assets)* Add new asset "species_occurrences" to load occurrences spatial multipoints to PostgreSQL - ([6139802](https://github.com/coding-kelps/edelweiss/commit/6139802e85d67ad4f0996249d0f3e6615f742f91))
-- *(assets)* Add lat long values convertion to geospatial data structure with newly added geospatial_occurrences and occurrences_by_taxon_key tables - ([518d474](https://github.com/coding-kelps/edelweiss/commit/518d474334b5b76ad8757ec7658da50a51df3245))
-- *(resources)* Download GBIF dataset in temporary directories - ([5daac8e](https://github.com/coding-kelps/edelweiss/commit/5daac8ee29d23cff893461b5c089dfe57cdbb1ce))
-- *(tegola)* Add taxon_key filter to display only one species in the map - ([6b3588e](https://github.com/coding-kelps/edelweiss/commit/6b3588e2d805512afb0d6d0e2f1b88a024f47b8a))
-- Separate data ingestion from operational loading - ([6e8676b](https://github.com/coding-kelps/edelweiss/commit/6e8676bb83f113b0d9bef2f69758bf4434afefa8))
+- *(assets)* Add date to occurrences - ([f73587e](https://github.com/coding-kelps/edelweiss/commit/f73587eea7079286fa7628e802dbe673c87d21a7))
+- *(assets)* Add species scientific name to operational database - ([8fad1a3](https://github.com/coding-kelps/edelweiss/commit/8fad1a3e246b374ad4c31147efcf206c7708b86d))
+- *(assets)* Add two new assets species_names and occurrences to load more information to operational database - ([78e7133](https://github.com/coding-kelps/edelweiss/commit/78e71333fbfc673d1ca428b02a240f37502a0bba))
+- *(assets)* Add new asset "species_occurrences" to load occurrences spatial multipoints to PostgreSQL - ([8eda448](https://github.com/coding-kelps/edelweiss/commit/8eda448c4d373de02a35d7042b2f1e5d9e9ca1e9))
+- *(assets)* Add lat long values convertion to geospatial data structure with newly added geospatial_occurrences and occurrences_by_taxon_key tables - ([537edd9](https://github.com/coding-kelps/edelweiss/commit/537edd93b1fa6f86d7fc3ee44f743e1f530a7d9e))
+- *(resources)* Download GBIF dataset in temporary directories - ([0f88aba](https://github.com/coding-kelps/edelweiss/commit/0f88aba6cdc5f328204624bd0bd2a1e9e679dde5))
+- *(tegola)* Add taxon_key filter to display only one species in the map - ([f2547f3](https://github.com/coding-kelps/edelweiss/commit/f2547f3877affb3d4d33d3255ad3fc5b109c4a0e))
+- Separate data ingestion from operational loading - ([f1ec11d](https://github.com/coding-kelps/edelweiss/commit/f1ec11d6f29b884b7ebddedf4716df21434816e7))
 - Add vernaculars in both french and deutsch in addition to english - ([d4e2d71](https://github.com/coding-kelps/edelweiss/commit/d4e2d714e94f6d68b82f78bdafd11031f1b9267f))
 - Add check for previous GBIF download with similar request - ([e0291a6](https://github.com/coding-kelps/edelweiss/commit/e0291a6451ec62d47946b41937c6e41a9ca3f412))
 - Add sensor to request GBIF download - ([b402b48](https://github.com/coding-kelps/edelweiss/commit/b402b482523042a36ade46c7ce6e99f75c764b77))
@@ -34,10 +34,10 @@ All notable changes to this project will be documented in this file.
 
 ### 🚜 Refactor
 
-- *(assets)* Change assets output from duckdb Table to parquet files - ([ccadd60](https://github.com/coding-kelps/edelweiss/commit/ccadd60a9995763c85ccf5791a21b3aa3a7bdd7c))
-- *(assets)* Change GBIF occurrences loading from duckdb to parquets - ([ace0047](https://github.com/coding-kelps/edelweiss/commit/ace0047b801335e41dfd72e946c9852156c72d0f))
-- *(assets)* Rename duckdb table column names from camelCase to snake_case - ([0771743](https://github.com/coding-kelps/edelweiss/commit/0771743fa59d8aab87518a4b3c53091dac9aea9a))
-- Change repository.py into defintions.py - ([6fee3e1](https://github.com/coding-kelps/edelweiss/commit/6fee3e1e783c2aae8839bb4844077f51695865ca))
+- *(assets)* Change assets output from duckdb Table to parquet files - ([641d685](https://github.com/coding-kelps/edelweiss/commit/641d6853c02f5e5dec1ab27a167ba3482a4d3c4b))
+- *(assets)* Change GBIF occurrences loading from duckdb to parquets - ([14a264c](https://github.com/coding-kelps/edelweiss/commit/14a264c47f26a234c1532bc479e81af46e0d6646))
+- *(assets)* Rename duckdb table column names from camelCase to snake_case - ([5dfb535](https://github.com/coding-kelps/edelweiss/commit/5dfb5356f041b140102763457df96c1dc2eb591f))
+- Change repository.py into defintions.py - ([3e2d0f2](https://github.com/coding-kelps/edelweiss/commit/3e2d0f2bb9c654df6ffd9d098cb7b6e6c5c5f290))
 - Go back to static partioning - ([be93f6a](https://github.com/coding-kelps/edelweiss/commit/be93f6ae1052921cf171e8a3623027888efc5bc8))
 - Refactor GBIF download assets with dynamic partitioning - ([bb39f55](https://github.com/coding-kelps/edelweiss/commit/bb39f55f3f67af8b5acda365cf28138c9fd79d3b))
 - Put all keyword in SQL queries into capital - ([ba79803](https://github.com/coding-kelps/edelweiss/commit/ba7980342ea86e2b3d942bd3538d5970b88cf8ce))
@@ -47,19 +47,18 @@ All notable changes to this project will be documented in this file.
 - Separate the dagster species into 6 different assets - ([39504bc](https://github.com/coding-kelps/edelweiss/commit/39504bcafa9390fa39f79663983bf6c6900f8d19))
 - Change example - ([50da403](https://github.com/coding-kelps/edelweiss/commit/50da40311f536f137e11d17afbeb15dd9cb6472d))
 
+### 🔨 Build
+
+- *(dockerfile)* Bump to newer image of python:3.12.X - ([1ebc6bf](https://github.com/coding-kelps/edelweiss/commit/1ebc6bf0950ccd32bca24125aa1b95379cb485cd))
+
 ### ⚙️ Miscellaneous Tasks
 
-- *(release)* Add automated release creation with changelog auto update - ([b856441](https://github.com/coding-kelps/edelweiss/commit/b8564413ea55d63c3b7087e1aafc06c86978a4a6))
+- *(changelog)* Change git cliff configuration - ([9af7f23](https://github.com/coding-kelps/edelweiss/commit/9af7f23bce839b653e9fc962171ade40940cb3ad))
+- *(dev)* Add tegola example docker compose configuration - ([92c8c5e](https://github.com/coding-kelps/edelweiss/commit/92c8c5e93c6cec229654314d6d5df06ad6b6dac3))
+- *(release)* Add automated release creation with changelog auto update - ([17ca569](https://github.com/coding-kelps/edelweiss/commit/17ca569c842df24dead918fda1af30af500b8738))
+- *(tegola)* Add environment variables loading in configuration - ([6e8f2b0](https://github.com/coding-kelps/edelweiss/commit/6e8f2b0f2f7eca165d0717368988336fc64ce925))
+- Add development containers to .gitignore - ([7f2b670](https://github.com/coding-kelps/edelweiss/commit/7f2b6704623e65f46fa4d830e2b735226d09f264))
 - Delete .DS_Store - ([92dd0bd](https://github.com/coding-kelps/edelweiss/commit/92dd0bdf028fd31f8a6f825d33c6f690267daa8c))
-
-### Build
-
-- *(dockerfile)* Bump to newer image of python:3.12.X - ([273c4ad](https://github.com/coding-kelps/edelweiss/commit/273c4ad53ee9962156a68430ebbc843aaf9b9839))
-
-### Dev
-
-- *(tegola)* Add environment variables loading in configuration - ([f44258a](https://github.com/coding-kelps/edelweiss/commit/f44258a1aabe09aaf3d1c660ac5cb6860eedf8f3))
-- Add tegola example docker compose configuration - ([d7ce2b1](https://github.com/coding-kelps/edelweiss/commit/d7ce2b16bea2a0a34b90b73144421a8cf354072a))
 
 ## New Contributors ❤️
 
